@@ -1,0 +1,177 @@
+[tool.poetry]
+name = "teleon"
+version = "0.1.0"
+description = "The Platform for Intelligent Agents - Deploy production-ready AI agents in minutes"
+authors = ["Teleon AI, Inc. <founders@teleon.ai>"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://teleon.ai"
+repository = "https://github.com/teleonAI/teleon"
+documentation = "https://docs.teleon.ai"
+keywords = ["ai", "agents", "llm", "automation", "machine-learning", "agentic", "multi-agent", "ai-agents"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+]
+packages = [{include = "teleon"}]
+include = ["LICENSE", "README.md", "teleon/**/*.py"]
+exclude = [
+    "tests",
+    "teleon-platform",
+    "teleon-platform-azure",
+    "teleon-dashboard",
+    "teleon-dashboard-test",
+    "teleon-website",
+    "teleon-infra",
+    "demo_project",
+    "demo_project_2",
+    "examples",
+    "docs",
+    "venv",
+    "node_modules",
+    "*.pyc",
+    "__pycache__",
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+# Web Framework
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+# Data Validation
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+# LLM Providers (optional)
+# Note: Install based on needs
+# openai = "^1.3.7"
+# anthropic = "^0.7.7"
+# CLI
+typer = {extras = ["all"], version = "^0.12.0"}
+rich = "^13.7.0"
+# Utilities
+python-dotenv = "^1.0.0"
+pyyaml = "^6.0.1"
+httpx = "^0.25.2"
+tenacity = "^8.2.3"
+structlog = "^23.2.0"
+# Observability
+prometheus-client = "^0.19.0"
+
+[tool.poetry.group.dev.dependencies]
+# Testing
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+pytest-cov = "^4.1.0"
+pytest-mock = "^3.12.0"
+pytest-timeout = "^2.2.0"
+# Code Quality
+black = "^23.12.0"
+flake8 = "^6.1.0"
+mypy = "^1.7.1"
+isort = "^5.13.0"
+pylint = "^3.0.3"
+# Pre-commit
+pre-commit = "^3.6.0"
+# Development
+ipython = "^8.18.1"
+ipdb = "^0.13.13"
+# Load Testing
+locust = "^2.20.0"
+
+[tool.poetry.scripts]
+teleon = "teleon.cli.main:app"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+python_classes = "Test*"
+asyncio_mode = "auto"
+addopts = """
+    -v
+    --strict-markers
+    --cov=teleon
+    --cov-report=html
+    --cov-report=term-missing
+    --cov-fail-under=80
+"""
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "e2e: End-to-end tests",
+    "slow: Slow running tests",
+]
+
+[tool.coverage.run]
+source = ["teleon"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
