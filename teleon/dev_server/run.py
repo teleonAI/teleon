@@ -6,6 +6,7 @@ This is a fallback in case the CLI has issues.
 Users can run this directly: python -m teleon.dev_server.run
 """
 
+import os
 import sys
 import uvicorn
 from pathlib import Path
@@ -15,6 +16,10 @@ from teleon.discovery import discover_agents
 
 def main():
     """Run the Teleon development server."""
+    # Get host and port from environment variables
+    host = os.environ.get("TELEON_HOST", "127.0.0.1")
+    port = int(os.environ.get("TELEON_PORT", "8000"))
+    
     print("\n" + "=" * 80)
     print("🚀 TELEON DEVELOPMENT SERVER")
     print("=" * 80)
@@ -52,8 +57,8 @@ def main():
     print("🌐 SERVER ENDPOINTS")
     print("=" * 80)
     print()
-    print("   📍 Dashboard:   http://127.0.0.1:8000")
-    print("   📖 API Docs:    http://127.0.0.1:8000/docs")
+    print(f"   📍 Dashboard:   http://{host}:{port}")
+    print(f"   📖 API Docs:    http://{host}:{port}/docs")
     
     if agents:
         print("\n   🤖 Agent Endpoints:")
@@ -70,7 +75,7 @@ def main():
                 short_id = agent_id.replace('agent_', '')[:12]
                 # Neon cyan for agent IDs, neon green for URLs
                 print(f"      • {info['name']} \033[96m[{short_id}]\033[0m")
-                print(f"        \033[92mhttp://127.0.0.1:8000/{agent_id}/docs\033[0m")
+                print(f"        \033[92mhttp://{host}:{port}/{agent_id}/docs\033[0m")
     
     print()
     print("=" * 80)
@@ -82,8 +87,8 @@ def main():
     try:
         uvicorn.run(
             app,
-            host="127.0.0.1",
-            port=8000,
+            host=host,
+            port=port,
             log_level="info"
         )
     except KeyboardInterrupt:
