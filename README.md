@@ -1,6 +1,6 @@
 <div align="center">
 
-![Teleon Logo](logo_teleon.png)
+![Teleon Logo](/teleon/logo_teleon.png)
 
 # Teleon
 
