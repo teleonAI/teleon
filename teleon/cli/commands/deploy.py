@@ -136,6 +136,31 @@ def main(
     for agent in agents:
         console.print(f"  • {agent['name']}")
     
+    # Step 2.5: Validate API keys in code (CRITICAL for production)
+    api_key_errors = validate_api_keys_in_code(agents, env)
+    if api_key_errors:
+        console.print("\n" + "="*70)
+        console.print("[bold red]❌ API KEY VALIDATION ERRORS[/bold red]")
+        console.print("="*70)
+        for error in api_key_errors:
+            console.print(f"\n[red]📄 {error['file']}:[/red]")
+            console.print(f"   {error['message']}")
+        
+        console.print("\n" + "="*70)
+        console.print("\n[bold yellow]💡 How to fix:[/bold yellow]")
+        if env == "production":
+            console.print("   • Get a production API key from: [cyan]https://dashboard.teleon.ai[/cyan]")
+            console.print("   • Set api_key='tlk_live_xxxxx' in TeleonClient()")
+            console.print("   • Set environment='production' in TeleonClient()")
+        else:
+            console.print("   • For development: use environment='dev' (no API key needed)")
+            console.print("   • For production: get API key from https://dashboard.teleon.ai")
+        
+        console.print("\n[bold red]Deployment blocked to prevent runtime errors.[/bold red]")
+        raise typer.Exit(1)
+    
+    console.print(f"[green]✓[/green] API key validation passed")
+    
     # Step 3: Analyze dependencies
     needs_database = analyze_database_needs(agents)
     
@@ -222,6 +247,156 @@ def check_authentication() -> tuple[bool, dict]:
     except Exception as e:
         console.print(f"\n[yellow]⚠️  API key verification error: {e}[/yellow]")
         return True, config_data
+
+
+def validate_api_keys_in_code(agents, environment):
+    """
+    Validate API keys in agent code files.
+    
+    For production deployments, ensures:
+    1. API key is present
+    2. API key format is correct (tlk_live_* for production)
+    3. API key is ACTUALLY VALID (makes API call to verify)
+    4. Environment is set to 'production'
+    
+    Returns list of errors, empty if validation passes.
+    """
+    import re
+    import httpx
+    
+    errors = []
+    checked_files = set()
+    verified_keys = {}  # Cache API key verification results
+    
+    platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
+    
+    for agent in agents:
+        file_path = Path(agent['file'])
+        
+        # Only check each file once
+        if file_path in checked_files:
+            continue
+        checked_files.add(file_path)
+        
+        try:
+            content = file_path.read_text()
+        except Exception as e:
+            errors.append({
+                'file': str(file_path),
+                'message': f'Failed to read file: {e}'
+            })
+            continue
+        
+        # Find TeleonClient initialization
+        # Pattern: TeleonClient(api_key=..., environment=...)
+        client_patterns = [
+            r'TeleonClient\s*\([^)]*\)',
+            r'client\s*=\s*TeleonClient\s*\([^)]*\)',
+        ]
+        
+        found_client = False
+        for pattern in client_patterns:
+            matches = re.finditer(pattern, content, re.DOTALL)
+            for match in matches:
+                found_client = True
+                client_init = match.group(0)
+                
+                # Check for api_key parameter
+                api_key_match = re.search(r'api_key\s*=\s*["\']([^"\']+)["\']', client_init)
+                env_match = re.search(r'environment\s*=\s*["\']([^"\']+)["\']', client_init)
+                
+                # For production deployments, strict validation
+                if environment == "production":
+                    if not api_key_match:
+                        errors.append({
+                            'file': str(file_path),
+                            'message': 'Missing api_key parameter in TeleonClient(). Production deployments require a valid API key.'
+                        })
+                        continue
+                    
+                    api_key = api_key_match.group(1)
+                    
+                    # Step 1: Validate API key format
+                    if not api_key.startswith('tlk_live_'):
+                        errors.append({
+                            'file': str(file_path),
+                            'message': f'Invalid API key format: "{api_key}". Production requires api_key starting with "tlk_live_"'
+                        })
+                        continue  # Don't try to verify invalid format
+                    
+                    # Step 2: ACTUALLY VERIFY the API key with the platform
+                    if api_key not in verified_keys:
+                        console.print(f"[dim]  Verifying API key {api_key[:20]}...[/dim]")
+                        
+                        try:
+                            # Make a test API call to verify the key
+                            # Use /api/v1/projects endpoint to verify auth works
+                            response = httpx.get(
+                                f"{platform_url}/api/v1/projects",
+                                headers={"Authorization": f"Bearer {api_key}"},
+                                timeout=10.0
+                            )
+                            
+                            if response.status_code == 200:
+                                # API key is valid and has access
+                                verified_keys[api_key] = True
+                                console.print(f"[dim]  ✓ API key verified[/dim]")
+                            elif response.status_code == 401:
+                                # API key is invalid or missing
+                                verified_keys[api_key] = False
+                                errors.append({
+                                    'file': str(file_path),
+                                    'message': f'API key is invalid or expired: "{api_key[:20]}...". Get a valid key from https://dashboard.teleon.ai'
+                                })
+                            elif response.status_code == 403:
+                                # API key is valid but doesn't have permission
+                                verified_keys[api_key] = False
+                                errors.append({
+                                    'file': str(file_path),
+                                    'message': f'API key lacks required permissions: "{api_key[:20]}...". Ensure your API key has "projects:read" scope at https://dashboard.teleon.ai'
+                                })
+                            else:
+                                # Other error - don't block deployment
+                                console.print(f"[yellow]  ⚠️  Could not verify API key (server returned {response.status_code}), but will proceed[/yellow]")
+                                verified_keys[api_key] = True  # Allow deployment to proceed
+                        except httpx.TimeoutException:
+                            # Network timeout - don't block deployment but warn
+                            console.print(f"[yellow]  ⚠️  Timeout verifying API key (will proceed anyway)[/yellow]")
+                            verified_keys[api_key] = True  # Allow deployment to proceed
+                        except Exception as e:
+                            # Network error - don't block deployment but warn
+                            console.print(f"[yellow]  ⚠️  Could not verify API key: {e} (will proceed anyway)[/yellow]")
+                            verified_keys[api_key] = True  # Allow deployment to proceed
+                    elif not verified_keys[api_key]:
+                        # Key was already verified and found invalid
+                        errors.append({
+                            'file': str(file_path),
+                            'message': f'API key is invalid: "{api_key[:20]}..."'
+                        })
+                    
+                    # Step 3: Check environment parameter
+                    if env_match:
+                        env_value = env_match.group(1)
+                        if env_value != 'production':
+                            errors.append({
+                                'file': str(file_path),
+                                'message': f'Environment mismatch: environment="{env_value}" but deploying to production. Set environment="production"'
+                            })
+                    else:
+                        # No environment specified - warn about it
+                        errors.append({
+                            'file': str(file_path),
+                            'message': 'Missing environment="production" in TeleonClient(). Production deployments require explicit environment setting.'
+                        })
+        
+        # If we found agents but no TeleonClient, that's also an error
+        if not found_client and "@client.agent" in content:
+            errors.append({
+                'file': str(file_path),
+                'message': 'Found @client.agent decorator but no TeleonClient initialization. Add: client = TeleonClient(api_key="tlk_live_...", environment="production")'
+            })
+    
+    return errors
 
 
 def detect_agents():
