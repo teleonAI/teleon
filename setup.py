@@ -54,7 +54,7 @@ setup(
         "pydantic>=2.5.0",
         "pydantic-settings>=2.1.0",
         # CLI
-        "typer>=0.12.0",
+        "typer>=0.21.0",
         "rich>=13.7.0",
         # Utilities
         "python-dotenv>=1.0.0",
