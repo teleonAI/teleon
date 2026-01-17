@@ -14,6 +14,7 @@ from teleon.__version__ import __version__
 from teleon.cli.commands.dev import dev as dev_cmd
 from teleon.cli.commands.exec import exec_app
 from teleon.cli.commands.deploy import app as deploy_app
+from teleon.cli.commands.push import app as push_app
 from teleon.cli.commands.agents import app as agents_app
 from teleon.cli.commands.helix import app as helix_app
 from teleon.cli.commands.cortex import app as cortex_app
@@ -32,6 +33,7 @@ app.add_typer(auth_app, name="auth")
 app.add_typer(dev_cmd, name="dev")
 app.add_typer(exec_app, name="exec")
 app.add_typer(deploy_app, name="deploy")
+app.add_typer(push_app, name="push")
 app.add_typer(agents_app, name="agents")
 app.add_typer(helix_app, name="helix")
 app.add_typer(cortex_app, name="cortex")
@@ -550,4 +552,3 @@ cli = app
 
 if __name__ == "__main__":
     app()
-
