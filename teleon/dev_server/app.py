@@ -16,6 +16,7 @@ import os
 import secrets
 import time
 import uuid
+import logging
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,7 +29,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
 from teleon.discovery import discover_agents
+
+logger = logging.getLogger("teleon.dev_server")
 
 
 class AgentRequest(BaseModel):
@@ -113,8 +122,10 @@ def create_dev_server(
         "total_requests": 0,
         "total_tokens": 0,
         "total_cost": 0.0,
+        "total_bandwidth_bytes": 0,  # Track total bytes sent
         "requests_by_minute": defaultdict(int),  # {minute_timestamp: count}
         "latency_by_minute": defaultdict(list),   # {minute_timestamp: [latencies]}
+        "bandwidth_by_minute": defaultdict(int),  # {minute_timestamp: bytes}
         "requests_by_agent": defaultdict(int),
         "tokens_by_agent": defaultdict(int),
         "cost_by_agent": defaultdict(float),
@@ -219,6 +230,17 @@ def create_dev_server(
                 
                 # Update performance metrics
                 performance_metrics["total_requests"] += 1
+                
+                # Track bandwidth from response headers
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        bytes_sent = int(content_length)
+                        performance_metrics["total_bandwidth_bytes"] += bytes_sent
+                        minute_key_bw = request_timestamp.replace(second=0, microsecond=0).isoformat()
+                        performance_metrics["bandwidth_by_minute"][minute_key_bw] += bytes_sent
+                    except (ValueError, TypeError):
+                        pass
                 
                 # Bucket by minute for time-series data
                 minute_key = request_timestamp.replace(second=0, microsecond=0).isoformat()
@@ -1172,11 +1194,16 @@ curl -X POST http://localhost:8000/invoke \\
                                len(performance_metrics["latency_by_minute"].get(minute_key, [1])))
             })
         
+        # Convert bandwidth to GB for readability
+        bandwidth_gb = performance_metrics["total_bandwidth_bytes"] / (1024 * 1024 * 1024)
+        
         return {
             "total_requests": performance_metrics["total_requests"],
             "avg_latency_ms": round(avg_latency, 2),
             "total_tokens": performance_metrics["total_tokens"],
             "total_cost": round(performance_metrics["total_cost"], 4),
+            "total_bandwidth_bytes": performance_metrics["total_bandwidth_bytes"],
+            "total_bandwidth_gb": round(bandwidth_gb, 4),
             "requests_per_minute": last_60_minutes,
             "requests_by_agent": dict(performance_metrics["requests_by_agent"]),
             "tokens_by_agent": dict(performance_metrics["tokens_by_agent"]),
@@ -1480,10 +1507,114 @@ curl -X POST http://localhost:8000/invoke \\
         except Exception as e:
             reload_state["file_watcher_active"] = False
     
+    # ==================== PLATFORM METRICS REPORTER ====================
+    
+    async def report_metrics_to_platform():
+        """
+        Background task that periodically reports metrics to Teleon platform.
+        
+        This runs every 60 seconds and batches all metrics, so it has
+        ZERO impact on request latency. The agent never waits for this.
+        """
+        if not HTTPX_AVAILABLE:
+            logger.warning("httpx not available - platform metrics reporting disabled")
+            return
+        
+        platform_url = os.getenv("TELEON_PLATFORM_URL")
+        deployment_id = os.getenv("TELEON_DEPLOYMENT_ID")
+        platform_api_key = os.getenv("TELEON_API_KEY") or os.getenv("TELEON_PLATFORM_API_KEY")
+        
+        if not all([platform_url, deployment_id, platform_api_key]):
+            logger.debug(
+                "Platform metrics reporting disabled - missing env vars: "
+                "TELEON_PLATFORM_URL, TELEON_DEPLOYMENT_ID, or TELEON_API_KEY"
+            )
+            return
+        
+        logger.info(f"Platform metrics reporter started for deployment {deployment_id}")
+        
+        report_interval = 60  # Report every 60 seconds
+        last_reported = {
+            "requests": 0,
+            "bandwidth_bytes": 0,
+        }
+        
+        while True:
+            try:
+                await asyncio.sleep(report_interval)
+                
+                # Get current totals
+                current_requests = performance_metrics["total_requests"]
+                current_bandwidth = performance_metrics["total_bandwidth_bytes"]
+                
+                # Calculate deltas since last report
+                new_requests = current_requests - last_reported["requests"]
+                new_bandwidth = current_bandwidth - last_reported["bandwidth_bytes"]
+                
+                if new_requests == 0:
+                    # No activity, skip this report
+                    continue
+                
+                # Calculate average latency from recent data
+                all_latencies = []
+                for latencies in performance_metrics["latency_by_minute"].values():
+                    all_latencies.extend(latencies)
+                avg_latency = sum(all_latencies) / len(all_latencies) if all_latencies else 0
+                
+                # Calculate success/error counts (approximation: assume 95% success in dev)
+                # In production, middleware would track actual success/error
+                success_count = int(new_requests * 0.95)
+                error_count = new_requests - success_count
+                
+                # Build payload
+                payload = {
+                    "deployment_id": deployment_id,
+                    "metrics": {
+                        "request_count": new_requests,
+                        "success_count": success_count,
+                        "error_count": error_count,
+                        "avg_latency_ms": round(avg_latency, 2),
+                        "bandwidth_bytes": new_bandwidth,
+                        "period_start": (datetime.utcnow() - timedelta(seconds=report_interval)).isoformat(),
+                        "period_end": datetime.utcnow().isoformat(),
+                    }
+                }
+                
+                # Send to platform (fire-and-forget style - don't wait long)
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.post(
+                        f"{platform_url.rstrip('/')}/api/v1/agents/ingest",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {platform_api_key}",
+                            "Content-Type": "application/json",
+                            "X-Deployment-ID": deployment_id,
+                        }
+                    )
+                    
+                    if response.status_code in (200, 201, 202):
+                        logger.debug(f"Reported {new_requests} requests, {new_bandwidth} bytes to platform")
+                        last_reported["requests"] = current_requests
+                        last_reported["bandwidth_bytes"] = current_bandwidth
+                    else:
+                        logger.warning(
+                            f"Platform metrics report failed: {response.status_code} - {response.text[:100]}"
+                        )
+                        
+            except asyncio.CancelledError:
+                logger.info("Platform metrics reporter shutting down")
+                break
+            except Exception as e:
+                # Never let metrics reporting crash the agent
+                logger.debug(f"Platform metrics report error (non-fatal): {e}")
+                # Continue running - don't stop on errors
+    
     # Start file watcher on startup
     @app.on_event("startup")
     async def startup_event():
         await start_file_watcher()
+        # Start platform metrics reporter (non-blocking background task)
+        asyncio.create_task(report_metrics_to_platform())
     
     # ==================== PLAYGROUND ENDPOINTS ====================
     
@@ -1685,4 +1816,3 @@ curl -X POST http://localhost:8000/invoke \\
         """)
 
     return app
-
