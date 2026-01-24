@@ -54,18 +54,26 @@ class SentinelAuditLogger:
     Audit logger for Sentinel violations.
     
     Tracks:
-    - All violations
+    - All violations (in-memory for local access)
     - Violation rates per agent
     - Action history
     - Audit trail export
+    
+    Uses dedicated SentinelViolationPersistence for database persistence,
+    separate from general audit logging.
     """
     
-    def __init__(self, max_records: int = 10000):
+    def __init__(
+        self,
+        max_records: int = 10000,
+        violation_persistence: Optional[Any] = None
+    ):
         """
         Initialize audit logger.
 
         Args:
             max_records: Maximum records to keep in memory
+            violation_persistence: Optional SentinelViolationPersistence instance for DB persistence
         """
         self.max_records = max_records
         self.records: List[ViolationRecord] = []
@@ -73,6 +81,7 @@ class SentinelAuditLogger:
         self.agent_violations: Dict[str, List[ViolationRecord]] = defaultdict(list)
         self.logger = StructuredLogger("sentinel_audit", LogLevel.INFO)
         self._lock = threading.RLock()  # Thread-safe lock for all operations
+        self.violation_persistence = violation_persistence  # Dedicated Sentinel persistence
     
     def log_violation(
         self,
@@ -124,6 +133,58 @@ class SentinelAuditLogger:
             action_taken=action_taken,
             details=details
         )
+        
+        # Persist to platform via dedicated Sentinel persistence layer
+        if self.violation_persistence:
+            try:
+                # Determine validation type from context (default to input)
+                # This could be enhanced to track whether this is input or output validation
+                validation_type = "input"  # Could be passed as parameter in future
+                
+                # Submit to dedicated Sentinel persistence
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(
+                            self.violation_persistence.submit_violation(
+                                violation_type=violation_type,
+                                action_taken=action_taken,
+                                details=details,
+                                validation_type=validation_type
+                            )
+                        )
+                    else:
+                        asyncio.run(
+                            self.violation_persistence.submit_violation(
+                                violation_type=violation_type,
+                                action_taken=action_taken,
+                                details=details,
+                                validation_type=validation_type
+                            )
+                        )
+                except RuntimeError:
+                    # No event loop, try sync submission
+                    try:
+                        # Create new event loop for sync context
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            new_loop.run_until_complete(
+                                self.violation_persistence.submit_violation(
+                                    violation_type=violation_type,
+                                    action_taken=action_taken,
+                                    details=details,
+                                    validation_type=validation_type
+                                )
+                            )
+                        finally:
+                            new_loop.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                # Don't fail if persistence fails - violation is still stored in-memory
+                self.logger.warning(f"Failed to persist violation to platform: {e}")
     
     def get_violations(
         self,
