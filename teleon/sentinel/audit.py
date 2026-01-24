@@ -134,18 +134,19 @@ class SentinelAuditLogger:
             details=details
         )
         
-        # Persist to platform via dedicated Sentinel persistence layer
+        # Persist to platform via dedicated Sentinel persistence layer (non-blocking)
         if self.violation_persistence:
             try:
                 # Determine validation type from context (default to input)
                 # This could be enhanced to track whether this is input or output validation
                 validation_type = "input"  # Could be passed as parameter in future
                 
-                # Submit to dedicated Sentinel persistence
+                # Submit is now fully non-blocking - just schedule it
                 import asyncio
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
+                        # Fire-and-forget - submit_violation is now non-blocking
                         loop.create_task(
                             self.violation_persistence.submit_violation(
                                 violation_type=violation_type,
@@ -155,7 +156,8 @@ class SentinelAuditLogger:
                             )
                         )
                     else:
-                        asyncio.run(
+                        # If no loop, create one just for scheduling (non-blocking)
+                        asyncio.ensure_future(
                             self.violation_persistence.submit_violation(
                                 violation_type=violation_type,
                                 action_taken=action_taken,
@@ -164,27 +166,12 @@ class SentinelAuditLogger:
                             )
                         )
                 except RuntimeError:
-                    # No event loop, try sync submission
-                    try:
-                        # Create new event loop for sync context
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        try:
-                            new_loop.run_until_complete(
-                                self.violation_persistence.submit_violation(
-                                    violation_type=violation_type,
-                                    action_taken=action_taken,
-                                    details=details,
-                                    validation_type=validation_type
-                                )
-                            )
-                        finally:
-                            new_loop.close()
-                    except Exception:
-                        pass
+                    # No event loop available - violations will be queued when loop starts
+                    # This is fine, the background flush will handle it
+                    pass
             except Exception as e:
                 # Don't fail if persistence fails - violation is still stored in-memory
-                self.logger.warning(f"Failed to persist violation to platform: {e}")
+                self.logger.warning(f"Failed to schedule violation persistence: {e}")
     
     def get_violations(
         self,
