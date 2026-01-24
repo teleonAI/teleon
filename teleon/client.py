@@ -375,7 +375,11 @@ class TeleonClient:
                 if sentinel_config:
                     try:
                         from teleon.sentinel.integration import create_sentinel_engine
-                        sentinel_engine = create_sentinel_engine(sentinel_config)
+                        sentinel_engine = create_sentinel_engine(
+                            sentinel_config,
+                            agent_id=agent_id,
+                            agent_name=name
+                        )
                         if sentinel_engine:
                             # Register with registry
                             try:
