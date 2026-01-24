@@ -195,7 +195,9 @@ def parse_sentinel_config(sentinel_config: Optional[Dict[str, Any]]) -> Dict[str
 
 
 def create_sentinel_engine(
-    sentinel_config: Optional[Dict[str, Any]] = None
+    sentinel_config: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> Optional[SentinelEngine]:
     """
     Create a Sentinel engine from configuration.
@@ -204,6 +206,8 @@ def create_sentinel_engine(
     
     Args:
         sentinel_config: Sentinel configuration dict
+        agent_id: Optional agent ID for audit logging
+        agent_name: Optional agent name for audit logging
     
     Returns:
         SentinelEngine instance or None if disabled
@@ -213,7 +217,7 @@ def create_sentinel_engine(
         engine = create_sentinel_engine({
             'enabled': True,
             'content_filtering': True
-        })
+        }, agent_id="agent-123", agent_name="my-agent")
         ```
     """
     if not sentinel_config:
@@ -225,5 +229,27 @@ def create_sentinel_engine(
     if not config.enabled:
         return None
     
-    return SentinelEngine(config)
+    # Create dedicated Sentinel violation persistence if agent info provided
+    violation_persistence = None
+    if agent_id and config.audit_enabled:
+        try:
+            from teleon.sentinel.persistence import SentinelViolationPersistence
+            violation_persistence = SentinelViolationPersistence(
+                agent_id=agent_id,
+                agent_name=agent_name or agent_id
+            )
+        except Exception as e:
+            # If persistence creation fails, continue without it
+            logger = StructuredLogger("sentinel.integration", LogLevel.WARNING)
+            logger.warning(f"Failed to create Sentinel violation persistence: {e}")
+    
+    # Create SentinelAuditLogger with dedicated persistence layer
+    from teleon.sentinel.audit import SentinelAuditLogger
+    sentinel_audit_logger = SentinelAuditLogger(violation_persistence=violation_persistence)
+    
+    # Create engine and inject the audit logger
+    engine = SentinelEngine(config)
+    engine.audit_logger = sentinel_audit_logger
+    
+    return engine
 
