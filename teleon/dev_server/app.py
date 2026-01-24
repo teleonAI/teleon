@@ -17,7 +17,6 @@ import secrets
 import time
 import uuid
 import logging
-import logging
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,15 +35,7 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
-try:
-    import httpx
-    HTTPX_AVAILABLE = True
-except ImportError:
-    HTTPX_AVAILABLE = False
-
 from teleon.discovery import discover_agents
-
-logger = logging.getLogger("teleon.dev_server")
 
 logger = logging.getLogger("teleon.dev_server")
 
@@ -132,10 +123,8 @@ def create_dev_server(
         "total_tokens": 0,
         "total_cost": 0.0,
         "total_bandwidth_bytes": 0,  # Track total bytes sent
-        "total_bandwidth_bytes": 0,  # Track total bytes sent
         "requests_by_minute": defaultdict(int),  # {minute_timestamp: count}
         "latency_by_minute": defaultdict(list),   # {minute_timestamp: [latencies]}
-        "bandwidth_by_minute": defaultdict(int),  # {minute_timestamp: bytes}
         "bandwidth_by_minute": defaultdict(int),  # {minute_timestamp: bytes}
         "requests_by_agent": defaultdict(int),
         "tokens_by_agent": defaultdict(int),
@@ -241,17 +230,6 @@ def create_dev_server(
                 
                 # Update performance metrics
                 performance_metrics["total_requests"] += 1
-                
-                # Track bandwidth from response headers
-                content_length = response.headers.get("content-length")
-                if content_length:
-                    try:
-                        bytes_sent = int(content_length)
-                        performance_metrics["total_bandwidth_bytes"] += bytes_sent
-                        minute_key_bw = request_timestamp.replace(second=0, microsecond=0).isoformat()
-                        performance_metrics["bandwidth_by_minute"][minute_key_bw] += bytes_sent
-                    except (ValueError, TypeError):
-                        pass
                 
                 # Track bandwidth from response headers
                 content_length = response.headers.get("content-length")
@@ -1219,16 +1197,11 @@ curl -X POST http://localhost:8000/invoke \\
         # Convert bandwidth to GB for readability
         bandwidth_gb = performance_metrics["total_bandwidth_bytes"] / (1024 * 1024 * 1024)
         
-        # Convert bandwidth to GB for readability
-        bandwidth_gb = performance_metrics["total_bandwidth_bytes"] / (1024 * 1024 * 1024)
-        
         return {
             "total_requests": performance_metrics["total_requests"],
             "avg_latency_ms": round(avg_latency, 2),
             "total_tokens": performance_metrics["total_tokens"],
             "total_cost": round(performance_metrics["total_cost"], 4),
-            "total_bandwidth_bytes": performance_metrics["total_bandwidth_bytes"],
-            "total_bandwidth_gb": round(bandwidth_gb, 4),
             "total_bandwidth_bytes": performance_metrics["total_bandwidth_bytes"],
             "total_bandwidth_gb": round(bandwidth_gb, 4),
             "requests_per_minute": last_60_minutes,
