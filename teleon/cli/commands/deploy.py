@@ -1916,7 +1916,7 @@ def deploy_to_platform(agents, database_config, env, project_name):
                     else:
                         merged_helix_config[key] = agent_helix[key]
         
-        # Collect sentinel and cortex configs from all agents
+        # Collect sentinel and cortex configs from all agents (for backward compatibility)
         sentinel_configs = []
         cortex_configs = []
         for agent in agents:
@@ -1925,6 +1925,20 @@ def deploy_to_platform(agents, database_config, env, project_name):
             if agent.get("uses_cortex") and agent.get("cortex_config"):
                 cortex_configs.append(agent["cortex_config"])
         
+        # Prepare agent metadata for platform (clean, structured data)
+        agents_metadata = []
+        for agent in agents:
+            agents_metadata.append({
+                'name': agent.get('name'),
+                'file': agent.get('file'),
+                'uses_sentinel': agent.get('uses_sentinel', False),
+                'uses_cortex': agent.get('uses_cortex', False),
+                'uses_helix': agent.get('uses_helix', False),
+                'sentinel_config': agent.get('sentinel_config'),
+                'cortex_config': agent.get('cortex_config'),
+                'helix_config': agent.get('helix_config'),
+            })
+        
         data = {
             'project_id': project_id,
             'environment': env,
@@ -1932,9 +1946,10 @@ def deploy_to_platform(agents, database_config, env, project_name):
             'storage_architecture': architecture_id,
             'storage_architecture_name': architecture_name,
             'helix_config': json.dumps(merged_helix_config),
+            'agents': json.dumps(agents_metadata),  # Send full agent metadata
         }
         
-        # Add sentinel and cortex configs if any agents use them
+        # Add sentinel and cortex configs for backward compatibility
         if sentinel_configs:
             data['sentinel_config'] = json.dumps(sentinel_configs)
         if cortex_configs:
