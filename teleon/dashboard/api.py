@@ -14,15 +14,34 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from sqlalchemy import select, func, desc
+from sqlalchemy.ext.asyncio import AsyncSession
 import time
 import base64
 import json
+import os
+import sys
 
 from teleon.core import StructuredLogger, LogLevel
 from teleon.cortex.registry import registry
 from teleon.sentinel.registry import get_sentinel_registry
 from teleon.sentinel.audit import SentinelAuditLogger
 from teleon.client import TeleonClient
+
+# Try to import database models from platform
+# If running as part of platform, use platform models
+# Otherwise, set up database connection directly
+try:
+    # Try importing from platform API
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..', 'teleon-platform-aws'))
+    from apps.api.models import Agent, AgentStatus as AgentStatusEnum, AgentMetrics, User
+    from shared.database import get_db as get_platform_db, AsyncSessionLocal
+    DB_AVAILABLE = True
+except ImportError:
+    # If platform models not available, try to set up database connection directly
+    DB_AVAILABLE = False
+    logger = StructuredLogger("dashboard_api", LogLevel.WARNING)
+    logger.warning("Platform database models not available. Dashboard API will use fallback methods.")
 
 
 # Models
@@ -59,11 +78,33 @@ class MetricDataPoint(BaseModel):
     cost: float
 
 
-# In-memory storage (replace with actual database)
-_agents_db: Dict[str, Dict[str, Any]] = {}
-_metrics_db: List[Dict[str, Any]] = []
-
 logger = StructuredLogger("dashboard_api", LogLevel.INFO)
+
+
+async def get_db():
+    """
+    Get database session for dashboard API.
+    
+    Returns database session if available, otherwise returns None.
+    This is an async generator for FastAPI dependency injection.
+    """
+    if not DB_AVAILABLE:
+        yield None
+        return
+    
+    try:
+        async with AsyncSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
+    except Exception as e:
+        logger.error(f"Database session error: {e}")
+        yield None
 
 # Security
 security = HTTPBearer(auto_error=False)
@@ -210,123 +251,226 @@ def create_dashboard_app() -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Initialize sample data
-    _initialize_sample_data()
-    
     # Routes
     
     @app.get("/api/dashboard/stats", response_model=DashboardStats)
-    async def get_dashboard_stats():
+    async def get_dashboard_stats(db: Optional[AsyncSession] = Depends(get_db)):
         """Get overall dashboard statistics."""
-        active_count = sum(1 for a in _agents_db.values() if a["status"] == "running")
-        total_requests = sum(a["requests"] for a in _agents_db.values())
-        total_cost = sum(a["cost"] for a in _agents_db.values())
-        
-        return DashboardStats(
-            totalAgents=len(_agents_db),
-            activeAgents=active_count,
-            totalRequests=total_requests,
-            totalCost=total_cost
-        )
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get stats from database
+                result = await db.execute(
+                    select(
+                        func.count(Agent.id).label("total_agents"),
+                        func.sum(Agent.requests).label("total_requests"),
+                        func.sum(Agent.cost).label("total_cost"),
+                        func.sum(
+                            func.case((Agent.status == AgentStatusEnum.RUNNING, 1), else_=0)
+                        ).label("active_agents")
+                    )
+                )
+                stats = result.first()
+                
+                return DashboardStats(
+                    totalAgents=stats.total_agents or 0,
+                    activeAgents=stats.active_agents or 0,
+                    totalRequests=stats.total_requests or 0,
+                    totalCost=float(stats.total_cost or 0.0)
+                )
+            except Exception as e:
+                logger.error(f"Error getting dashboard stats from DB: {e}")
+                # Fallback to empty stats
+                return DashboardStats(
+                    totalAgents=0,
+                    activeAgents=0,
+                    totalRequests=0,
+                    totalCost=0.0
+                )
+        else:
+            # Fallback when DB not available
+            return DashboardStats(
+                totalAgents=0,
+                activeAgents=0,
+                totalRequests=0,
+                totalCost=0.0
+            )
     
     @app.get("/api/agents", response_model=List[AgentInfo])
-    async def list_agents(limit: Optional[int] = None):
+    async def list_agents(limit: Optional[int] = None, db: Optional[AsyncSession] = Depends(get_db)):
         """List all agents."""
-        agents = list(_agents_db.values())
-        if limit:
-            agents = agents[:limit]
-        
-        # Check registries for sentinel and cortex status
-        try:
-            sentinel_registry = await get_sentinel_registry()
-            sentinel_agents = await sentinel_registry.list_all()  # Returns {agent_id: engine}
-            sentinel_agent_ids = set(sentinel_agents.keys())
-        except Exception as e:
-            logger.warning(f"Error getting Sentinel registry: {e}")
-            sentinel_agent_ids = set()
-        
-        try:
-            cortex_agent_ids = set(await registry.list_agents())  # Returns [agent_id, ...]
-        except Exception as e:
-            logger.warning(f"Error getting Cortex registry: {e}")
-            cortex_agent_ids = set()
-        
-        # Enhance agents with sentinel/cortex status
-        enhanced_agents = []
-        for agent in agents:
-            agent_id = agent.get("id")
-            agent_dict = dict(agent)
-            agent_dict["has_sentinel"] = agent_id in sentinel_agent_ids if agent_id else False
-            agent_dict["has_cortex"] = agent_id in cortex_agent_ids if agent_id else False
-            enhanced_agents.append(AgentInfo(**agent_dict))
-        
-        return enhanced_agents
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get agents from database
+                query = select(Agent).order_by(desc(Agent.created_at))
+                if limit:
+                    query = query.limit(limit)
+                
+                result = await db.execute(query)
+                db_agents = result.scalars().all()
+                
+                # Check registries for sentinel and cortex status
+                try:
+                    sentinel_registry = await get_sentinel_registry()
+                    sentinel_agents = await sentinel_registry.list_all()
+                    sentinel_agent_ids = set(sentinel_agents.keys())
+                except Exception as e:
+                    logger.warning(f"Error getting Sentinel registry: {e}")
+                    sentinel_agent_ids = set()
+                
+                try:
+                    cortex_agent_ids = set(await registry.list_agents())
+                except Exception as e:
+                    logger.warning(f"Error getting Cortex registry: {e}")
+                    cortex_agent_ids = set()
+                
+                # Convert to AgentInfo
+                # Use database values directly (they're the source of truth)
+                # Registries are only for locally initialized agents
+                enhanced_agents = []
+                for agent in db_agents:
+                    agent_dict = agent.to_dict()
+                    # Database already has has_sentinel and has_cortex from deployment
+                    # Only override if agent is in local registries (for real-time status)
+                    if agent.agent_id in sentinel_agent_ids:
+                        agent_dict["has_sentinel"] = True
+                    if agent.agent_id in cortex_agent_ids:
+                        agent_dict["has_cortex"] = True
+                    enhanced_agents.append(AgentInfo(**agent_dict))
+                
+                return enhanced_agents
+            except Exception as e:
+                logger.error(f"Error listing agents from DB: {e}")
+                return []
+        else:
+            # Fallback when DB not available
+            return []
     
     @app.get("/api/agents/{agent_id}", response_model=AgentInfo)
-    async def get_agent(agent_id: str):
+    async def get_agent(agent_id: str, db: Optional[AsyncSession] = Depends(get_db)):
         """Get agent details."""
-        if agent_id not in _agents_db:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        
-        agent = _agents_db[agent_id]
-        
-        # Check registries for sentinel and cortex status
-        has_sentinel = False
-        has_cortex = False
-        
-        try:
-            sentinel_registry = await get_sentinel_registry()
-            sentinel_agents = await sentinel_registry.list_all()
-            has_sentinel = agent_id in sentinel_agents
-        except Exception as e:
-            logger.warning(f"Error checking Sentinel registry for {agent_id}: {e}")
-        
-        try:
-            cortex_agent_ids = await registry.list_agents()
-            has_cortex = agent_id in cortex_agent_ids
-        except Exception as e:
-            logger.warning(f"Error checking Cortex registry for {agent_id}: {e}")
-        
-        return AgentInfo(
-            id=agent["id"],
-            name=agent["name"],
-            status=agent["status"],
-            requests=agent["requests"],
-            cost=agent["cost"],
-            created_at=agent["created_at"],
-            last_active=agent.get("last_active"),
-            has_sentinel=has_sentinel,
-            has_cortex=has_cortex
-        )
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get agent from database by agent_id
+                result = await db.execute(
+                    select(Agent).where(Agent.agent_id == agent_id)
+                )
+                agent = result.scalar_one_or_none()
+                
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                # Use database values (source of truth)
+                agent_dict = agent.to_dict()
+                # Database already has has_sentinel and has_cortex from deployment
+                # Only check registries for real-time status if needed (optional enhancement)
+                
+                return AgentInfo(**agent_dict)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting agent from DB: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        else:
+            raise HTTPException(status_code=503, detail="Database not available")
     
     @app.patch("/api/agents/{agent_id}/status")
-    async def update_agent_status(agent_id: str, status: AgentStatus):
+    async def update_agent_status(agent_id: str, status: AgentStatus, db: Optional[AsyncSession] = Depends(get_db)):
         """Update agent status (start/stop)."""
-        if agent_id not in _agents_db:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        
-        _agents_db[agent_id]["status"] = status.status
-        _agents_db[agent_id]["last_active"] = datetime.now(timezone.utc).isoformat()
-        
-        logger.info(f"Agent {agent_id} status updated to {status.status}")
-        
-        return {"message": "Status updated", "status": status.status}
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get agent from database
+                result = await db.execute(
+                    select(Agent).where(Agent.agent_id == agent_id)
+                )
+                agent = result.scalar_one_or_none()
+                
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                # Update status
+                try:
+                    agent.status = AgentStatusEnum(status.status)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid status: {status.status}")
+                
+                agent.last_active = datetime.now(timezone.utc)
+                agent.updated_at = datetime.now(timezone.utc)
+                
+                await db.commit()
+                
+                logger.info(f"Agent {agent_id} status updated to {status.status}")
+                
+                return {"message": "Status updated", "status": status.status}
+            except HTTPException:
+                raise
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"Error updating agent status: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        else:
+            raise HTTPException(status_code=503, detail="Database not available")
     
     @app.delete("/api/agents/{agent_id}")
-    async def delete_agent(agent_id: str):
+    async def delete_agent(agent_id: str, db: Optional[AsyncSession] = Depends(get_db)):
         """Delete an agent."""
-        if agent_id not in _agents_db:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        
-        del _agents_db[agent_id]
-        logger.info(f"Agent {agent_id} deleted")
-        
-        return {"message": "Agent deleted"}
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get agent from database
+                result = await db.execute(
+                    select(Agent).where(Agent.agent_id == agent_id)
+                )
+                agent = result.scalar_one_or_none()
+                
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                await db.delete(agent)
+                await db.commit()
+                
+                logger.info(f"Agent {agent_id} deleted")
+                
+                return {"message": "Agent deleted"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"Error deleting agent: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        else:
+            raise HTTPException(status_code=503, detail="Database not available")
     
     @app.get("/api/metrics", response_model=List[MetricDataPoint])
-    async def get_metrics():
+    async def get_metrics(db: Optional[AsyncSession] = Depends(get_db)):
         """Get platform metrics."""
-        return _metrics_db
+        if DB_AVAILABLE and db is not None:
+            try:
+                # Get metrics from database (last 24 hours)
+                start_time = datetime.now(timezone.utc) - timedelta(hours=24)
+                
+                result = await db.execute(
+                    select(AgentMetrics)
+                    .where(AgentMetrics.period_start >= start_time)
+                    .where(AgentMetrics.aggregation_window == "1hour")
+                    .order_by(AgentMetrics.period_start)
+                )
+                metrics = result.scalars().all()
+                
+                # Convert to MetricDataPoint format
+                metric_points = []
+                for metric in metrics:
+                    metric_points.append(MetricDataPoint(
+                        timestamp=metric.period_start.strftime("%H:%M"),
+                        requests=metric.request_count,
+                        cost=float(metric.llm_cost_usd or 0.0)
+                    ))
+                
+                return metric_points
+            except Exception as e:
+                logger.error(f"Error getting metrics from DB: {e}")
+                return []
+        else:
+            # Fallback when DB not available
+            return []
     
     # ========================================
     # Cortex Memory Endpoints
@@ -678,6 +822,10 @@ def create_dashboard_app() -> FastAPI:
         """
         Get user's agents with Sentinel enabled only.
         
+        Checks both:
+        1. Sentinel registry (for locally initialized agents)
+        2. TeleonClient agent registry (for all agents, including deployed ones)
+        
         Args:
             user_id: Current user ID (from auth)
         """
@@ -691,8 +839,9 @@ def create_dashboard_app() -> FastAPI:
             all_engines = await sentinel_registry.list_all()
             
             agents = []
+            processed_agent_ids = set()
             
-            # Only process user's agents with Sentinel enabled
+            # First, process agents from sentinel registry (locally initialized)
             for agent_id, engine in all_engines.items():
                 # Security: Only process agents belonging to this user
                 if agent_id not in user_agents:
@@ -704,6 +853,7 @@ def create_dashboard_app() -> FastAPI:
                 if not config.enabled:
                     continue
                 
+                processed_agent_ids.add(agent_id)
                 audit_logger = engine.get_audit_logger()
                 
                 # Get violation stats for this agent
@@ -732,6 +882,67 @@ def create_dashboard_app() -> FastAPI:
                     },
                     "violation_count": violation_count,
                     "last_violation": last_violation,
+                })
+            
+            # Second, check TeleonClient agents for sentinel config (includes deployed agents)
+            for agent_id, agent_info in user_agents.items():
+                # Skip if already processed from registry
+                if agent_id in processed_agent_ids:
+                    continue
+                
+                # Check if agent has sentinel configuration
+                sentinel_config = agent_info.get("sentinel")
+                if not sentinel_config:
+                    continue
+                
+                # Check if sentinel is enabled
+                # Handle both dict and boolean configs
+                if isinstance(sentinel_config, dict):
+                    enabled = sentinel_config.get("enabled", True)
+                elif isinstance(sentinel_config, bool):
+                    enabled = sentinel_config
+                else:
+                    enabled = True  # Default to enabled if config exists
+                
+                if not enabled:
+                    continue
+                
+                # Extract features from config
+                if isinstance(sentinel_config, dict):
+                    features = {
+                        "content_filtering": sentinel_config.get("content_filtering", False),
+                        "pii_detection": sentinel_config.get("pii_detection", False),
+                        "compliance": sentinel_config.get("compliance", []),
+                        "custom_policies": sentinel_config.get("custom_policies", []),
+                    }
+                    # Normalize compliance list (handle enum values)
+                    if features["compliance"]:
+                        normalized_compliance = []
+                        for comp in features["compliance"]:
+                            if hasattr(comp, 'value'):
+                                normalized_compliance.append(comp.value)
+                            elif isinstance(comp, str):
+                                normalized_compliance.append(comp.lower())
+                            else:
+                                normalized_compliance.append(str(comp))
+                        features["compliance"] = normalized_compliance
+                else:
+                    features = {
+                        "content_filtering": False,
+                        "pii_detection": False,
+                        "compliance": [],
+                        "custom_policies": [],
+                    }
+                
+                agent_name = agent_info.get("name", agent_id)
+                
+                agents.append({
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "enabled": enabled,
+                    "features": features,
+                    "violation_count": 0,  # No violations tracked if not initialized
+                    "last_violation": None,
                 })
             
             return {"agents": agents}
@@ -805,77 +1016,6 @@ def create_dashboard_app() -> FastAPI:
         return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
     
     return app
-
-
-def _initialize_sample_data():
-    """Initialize sample data for demo purposes."""
-    global _agents_db, _metrics_db
-    
-    # Sample agents
-    _agents_db = {
-        "agent-1": {
-            "id": "agent-1",
-            "name": "customer-support",
-            "status": "running",
-            "requests": 1543,
-            "cost": 24.56,
-            "created_at": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
-            "last_active": "2 minutes ago",
-            "avgLatency": 120
-        },
-        "agent-2": {
-            "id": "agent-2",
-            "name": "data-processor",
-            "status": "running",
-            "requests": 2891,
-            "cost": 38.92,
-            "created_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
-            "last_active": "5 minutes ago",
-            "avgLatency": 85
-        },
-        "agent-3": {
-            "id": "agent-3",
-            "name": "research-assistant",
-            "status": "stopped",
-            "requests": 456,
-            "cost": 12.34,
-            "created_at": (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
-            "last_active": "1 hour ago",
-            "avgLatency": 210
-        },
-        "agent-4": {
-            "id": "agent-4",
-            "name": "email-analyzer",
-            "status": "running",
-            "requests": 789,
-            "cost": 19.75,
-            "created_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
-            "last_active": "10 minutes ago",
-            "avgLatency": 95
-        },
-        "agent-5": {
-            "id": "agent-5",
-            "name": "content-generator",
-            "status": "stopped",
-            "requests": 234,
-            "cost": 8.45,
-            "created_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
-            "last_active": "3 hours ago",
-            "avgLatency": 180
-        },
-    }
-    
-    # Sample metrics (last 24 hours)
-    base_time = datetime.now(timezone.utc) - timedelta(hours=24)
-    _metrics_db = [
-        {
-            "timestamp": (base_time + timedelta(hours=i)).strftime("%H:%M"),
-            "requests": 100 + (i * 20) + (i % 5) * 10,
-            "cost": 1.5 + (i * 0.3) + (i % 3) * 0.2
-        }
-        for i in range(24)
-    ]
-
 
 # Helper function to get the app instance
 def get_dashboard_app() -> FastAPI:
