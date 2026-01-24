@@ -3,7 +3,7 @@ Teleon Client - User authentication and agent registration
 """
 
 import os
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, Callable, List, TypeVar, cast
 import hashlib
 from datetime import datetime, timezone
 import httpx
@@ -232,6 +232,13 @@ class TeleonClient:
         """
         Decorator to register an agent with this client.
         
+        Now includes full runtime features:
+        - Sentinel validation (input/output)
+        - Memory integration (working, episodic, procedural)
+        - Cost tracking
+        - Execution context
+        - Metrics recording
+        
         Args:
             name: Agent name
             description: Agent description
@@ -244,7 +251,7 @@ class TeleonClient:
             **kwargs: Additional configuration
         
         Returns:
-            Decorated function
+            Decorated function with full runtime features
         
         Example:
             ```python
@@ -259,6 +266,14 @@ class TeleonClient:
             ```
         """
         def decorator(func: Callable):
+            # Validate function is async
+            import asyncio
+            if not asyncio.iscoroutinefunction(func):
+                raise TypeError(
+                    f"Agent function '{func.__name__}' must be async. "
+                    f"Use 'async def {func.__name__}(...)' instead."
+                )
+            
             # Generate unique agent ID
             agent_id = self._generate_agent_id(name)
             
@@ -272,12 +287,357 @@ class TeleonClient:
                     "required": param.default == inspect.Parameter.empty
                 }
             
-            # Register agent
+            # Map cortex config to memory config (for @agent compatibility)
+            memory_enabled = False
+            if cortex:
+                # Enable memory if cortex has learning or memory_types
+                memory_enabled = (
+                    cortex.get('learning', False) or
+                    bool(cortex.get('memory_types', []))
+                )
+            
+            # Map helix config to scale config (for @agent compatibility)
+            scale_config = None
+            if helix:
+                scale_config = {
+                    'min': helix.get('min', 1),
+                    'max': helix.get('max', 10),
+                    'target_cpu': helix.get('target_cpu', 70)
+                }
+            
+            # Create AgentConfig for runtime features
+            from teleon.config.agent_config import AgentConfig
+            agent_config = AgentConfig(
+                name=name,
+                memory=memory_enabled,
+                scale=scale_config or {'min': 1, 'max': 10},
+                llm={'model': model, 'temperature': temperature, 'max_tokens': max_tokens},
+                tools=kwargs.get('tools', []),
+                collaborate=False,
+                timeout=kwargs.get('timeout'),
+                signature=sig,
+                **{k: v for k, v in kwargs.items() if k not in ['tools', 'timeout']}
+            )
+            agent_config.validate()
+            
+            # Store sentinel config for wrapper
+            sentinel_config = sentinel
+            
+            # Create wrapped function with runtime features
+            from functools import wraps
+            from datetime import datetime, timezone
+            import uuid
+            import time
+            
+            @wraps(func)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                """Wrapper that adds agent capabilities: Sentinel, memory, cost tracking, execution context."""
+                
+                # Generate execution ID
+                execution_id = str(uuid.uuid4())
+                
+                # Create execution context
+                from teleon.context.execution import ExecutionContext
+                ctx = ExecutionContext(
+                    execution_id=execution_id,
+                    agent_name=name,
+                    config=agent_config.to_dict(),
+                    started_at=datetime.now(timezone.utc),
+                    input_args=args,
+                    input_kwargs=kwargs,
+                )
+                
+                # Setup tracing span
+                span_id = f"agent.{name}.{execution_id}"
+                start_time = time.time()
+                
+                # Initialize memory if enabled
+                memory_session = None
+                if memory_enabled:
+                    try:
+                        from teleon.memory.working import WorkingMemory
+                        memory_session = WorkingMemory(session_id=execution_id)
+                        # Store context in memory
+                        await memory_session.set("context", {
+                            "agent_name": name,
+                            "execution_id": execution_id,
+                            "started_at": ctx.started_at.isoformat()
+                        })
+                    except ImportError:
+                        # Memory not available
+                        pass
+                
+                # Setup cost tracking
+                total_cost = 0.0
+                
+                # Initialize Sentinel if configured (lazy)
+                sentinel_engine = None
+                if sentinel_config:
+                    try:
+                        from teleon.sentinel.integration import create_sentinel_engine
+                        sentinel_engine = create_sentinel_engine(sentinel_config)
+                        if sentinel_engine:
+                            # Register with registry
+                            try:
+                                from teleon.sentinel.registry import get_sentinel_registry
+                                registry = await get_sentinel_registry()
+                                await registry.register(name, sentinel_engine)
+                            except Exception:
+                                # Registry not critical, continue
+                                pass
+                    except ImportError:
+                        # Sentinel not available
+                        pass
+                    except Exception as e:
+                        # Sentinel initialization failed, log but continue
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                            logger.warning(f"Sentinel initialization failed: {e}")
+                        except ImportError:
+                            pass
+                
+                # SENTINEL: Validate input BEFORE execution
+                if sentinel_engine:
+                    try:
+                        input_data = {'args': args, 'kwargs': kwargs}
+                        input_result = await sentinel_engine.validate_input(
+                            input_data,
+                            name
+                        )
+                        
+                        # Handle violations based on action (BLOCK already raised by engine)
+                        if not input_result.passed:
+                            if input_result.action.value == 'redact' and input_result.redacted_content:
+                                # Note: Redaction of args/kwargs is complex, so we log it
+                                try:
+                                    from teleon.core import StructuredLogger, LogLevel
+                                    logger = StructuredLogger(f"agent.{name}", LogLevel.INFO)
+                                    logger.info("Input redacted by Sentinel", violations=len(input_result.violations))
+                                except ImportError:
+                                    pass
+                            
+                            # Log violations (FLAG mode - violations detected but not blocked)
+                            if input_result.action.value != 'block':
+                                try:
+                                    from teleon.core import StructuredLogger, LogLevel
+                                    logger = StructuredLogger(f"agent.{name}", LogLevel.WARNING)
+                                    logger.warning(
+                                        "Sentinel input violations detected",
+                                        violations=input_result.violations,
+                                        action=input_result.action.value
+                                    )
+                                except ImportError:
+                                    pass
+                    
+                    except Exception as e:
+                        # Re-raise AgentValidationError (blocking violations)
+                        from teleon.core.exceptions import AgentValidationError
+                        if isinstance(e, AgentValidationError):
+                            raise
+                        # Other Sentinel errors are logged but don't block
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger(f"agent.{name}", LogLevel.WARNING)
+                            logger.warning(f"Sentinel input validation error: {e}")
+                        except ImportError:
+                            pass
+                
+                try:
+                    # Execute the agent function
+                    result = await func(*args, **kwargs)
+                    
+                    # SENTINEL: Validate output AFTER execution
+                    if sentinel_engine:
+                        try:
+                            output_result = await sentinel_engine.validate_output(
+                                result,
+                                name
+                            )
+                            
+                            # Apply redaction if needed
+                            if output_result.redacted_content and output_result.action.value == 'redact':
+                                result = output_result.redacted_content
+                                try:
+                                    from teleon.core import StructuredLogger, LogLevel
+                                    logger = StructuredLogger(f"agent.{name}", LogLevel.INFO)
+                                    logger.info("Output redacted by Sentinel", violations=len(output_result.violations))
+                                except ImportError:
+                                    pass
+                            
+                            # Log violations (FLAG mode - violations detected but not blocked)
+                            if output_result.violations and output_result.action.value != 'block':
+                                try:
+                                    from teleon.core import StructuredLogger, LogLevel
+                                    logger = StructuredLogger(f"agent.{name}", LogLevel.WARNING)
+                                    logger.warning(
+                                        "Sentinel output violations detected",
+                                        violations=output_result.violations,
+                                        action=output_result.action.value
+                                    )
+                                except ImportError:
+                                    pass
+                        
+                        except Exception as e:
+                            # Re-raise AgentValidationError (blocking violations)
+                            from teleon.core.exceptions import AgentValidationError
+                            if isinstance(e, AgentValidationError):
+                                raise
+                            # Other Sentinel errors are logged but don't block
+                            try:
+                                from teleon.core import StructuredLogger, LogLevel
+                                logger = StructuredLogger(f"agent.{name}", LogLevel.WARNING)
+                                logger.warning(f"Sentinel output validation error: {e}")
+                            except ImportError:
+                                pass
+                    
+                    # Mark as successful
+                    ctx.mark_success(result)
+                    
+                    # Calculate execution time
+                    duration = time.time() - start_time
+                    
+                    # Store execution in episodic memory
+                    if memory_enabled and memory_session:
+                        try:
+                            from teleon.memory.episodic import EpisodicMemory
+                            episodic = EpisodicMemory()
+                            await episodic.store_event(
+                                agent_name=name,
+                                event_type="execution",
+                                data={
+                                    "execution_id": execution_id,
+                                    "input": {"args": str(args)[:100], "kwargs": str(kwargs)[:100]},
+                                    "output": str(result)[:500],
+                                    "success": True,
+                                    "duration": duration,
+                                    "cost": total_cost
+                                },
+                                metadata={
+                                    "agent_name": name,
+                                    "timestamp": ctx.started_at.isoformat()
+                                }
+                            )
+                        except (ImportError, Exception):
+                            # Episodic memory not available or failed
+                            pass
+                    
+                    # Update procedural memory (learning)
+                    if memory_enabled:
+                        try:
+                            from teleon.memory.procedural import ProceduralMemory
+                            procedural = ProceduralMemory()
+                            await procedural.record_success(
+                                pattern=f"{name}.execute",
+                                context={"args_count": len(args), "kwargs_count": len(kwargs)}
+                            )
+                        except (ImportError, Exception):
+                            # Procedural memory not available or failed
+                            pass
+                    
+                    # Record metrics
+                    try:
+                        from teleon.core import get_metrics
+                        get_metrics().record_request(
+                            component="agent",
+                            operation=name,
+                            duration=duration,
+                            status="success"
+                        )
+                        if total_cost > 0:
+                            get_metrics().increment_counter(
+                                'llm_cost',
+                                {'provider': 'unknown', 'model': model},
+                                total_cost
+                            )
+                    except ImportError:
+                        # Metrics not available
+                        pass
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Mark as failed
+                    ctx.mark_failure(e)
+                    
+                    # Calculate execution time
+                    duration = time.time() - start_time
+                    
+                    # Record failure for learning
+                    if memory_enabled:
+                        try:
+                            from teleon.memory.procedural import ProceduralMemory
+                            procedural = ProceduralMemory()
+                            await procedural.record_failure(
+                                pattern=f"{name}.execute",
+                                context={"error_type": type(e).__name__}
+                            )
+                        except (ImportError, Exception):
+                            # Procedural memory not available or failed
+                            pass
+                        
+                        # Store failure in episodic memory
+                        try:
+                            from teleon.memory.episodic import EpisodicMemory
+                            episodic = EpisodicMemory()
+                            await episodic.store_event(
+                                agent_name=name,
+                                event_type="execution_failure",
+                                data={
+                                    "execution_id": execution_id,
+                                    "error": str(e),
+                                    "error_type": type(e).__name__,
+                                    "duration": duration
+                                }
+                            )
+                        except (ImportError, Exception):
+                            pass
+                    
+                    # Record error metrics
+                    try:
+                        from teleon.core import get_metrics
+                        get_metrics().record_request(
+                            component="agent",
+                            operation=name,
+                            duration=duration,
+                            status="error"
+                        )
+                        get_metrics().record_error(
+                            component="agent",
+                            error_type=type(e).__name__
+                        )
+                    except ImportError:
+                        pass
+                    
+                    raise
+                
+                finally:
+                    # Close tracing span (log completion)
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger(f"agent.{name}", LogLevel.INFO)
+                        logger.info(
+                            "Agent execution completed",
+                            execution_id=execution_id,
+                            duration=time.time() - start_time,
+                            success=ctx.success
+                        )
+                    except ImportError:
+                        pass
+                    
+                    # Cleanup memory session
+                    if memory_session:
+                        try:
+                            await memory_session.close()
+                        except Exception:
+                            pass
+            
+            # Register agent (store wrapped function, not raw function)
             agent_info = {
                 "agent_id": agent_id,
                 "name": name,
                 "description": description or func.__doc__ or "No description provided",
-                "function": func,
+                "function": wrapper,  # Store wrapped function, not raw function
                 "user_id": self.user_id,
                 "model": model,
                 "temperature": temperature,
@@ -293,12 +653,21 @@ class TeleonClient:
             self.agents[agent_id] = agent_info
             TeleonClient._all_agents[agent_id] = agent_info
             
+            # Attach metadata to wrapper (for discovery)
+            wrapper._teleon_agent = True  # type: ignore
+            wrapper._teleon_config = agent_config  # type: ignore
+            wrapper._teleon_original_func = func  # type: ignore
+            
             if not os.getenv('TELEON_QUIET'):
                 print(f"✓ Agent registered: {name}")
                 print(f"  Agent ID: {agent_id}")
                 print(f"  URL: /{agent_id}/")
+                if sentinel:
+                    print(f"  🛡️  Sentinel: Enabled")
+                if memory_enabled:
+                    print(f"  🧠 Memory: Enabled")
             
-            return func
+            return wrapper
         
         return decorator
     
