@@ -150,12 +150,13 @@ class SentinelViolationPersistence:
                 self._circuit_failure_count = 0
         
         # Prepare violation payload
+        # Note: action_type must match AuditActionType enum values (AGENT_REQUEST, AGENT_RESPONSE)
         violation_payload = {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
             "action_type": "agent_request" if validation_type == "input" else "agent_response",
             "action": f"Sentinel violation: {violation_type}",
-            "status": "warning",
+            "status": "warning",  # Valid AuditLogStatus enum value
             "extra_metadata": {
                 "violation_type": violation_type,
                 "action_taken": action_taken,
@@ -283,8 +284,8 @@ class SentinelViolationPersistence:
             try:
                 async with httpx.AsyncClient() as client:
                     # Submit violations as AuditLog entries via agent batch endpoint
-                    # This endpoint supports both JWT service account tokens and deployment_id (legacy)
-                    batch_payload = {"logs": violations_to_send}
+                    # This endpoint expects a list directly, not wrapped in a dict
+                    # Endpoint signature: logs: List[Dict[str, Any]] = Body(...)
                     endpoint = f"{self.api_url}/api/v1/governance/audit-logs/batch/agent"
                     headers = {
                         "Authorization": f"Bearer {self.api_key}",
@@ -293,7 +294,7 @@ class SentinelViolationPersistence:
                     
                     response = await client.post(
                         endpoint,
-                        json=batch_payload,
+                        json=violations_to_send,  # Send list directly, not wrapped
                         headers=headers,
                         timeout=5.0,  # Reduced from 30s to 5s
                     )
@@ -310,6 +311,21 @@ class SentinelViolationPersistence:
                     
             except httpx.HTTPError as e:
                 # HTTP error - might be transient
+                # Log response body for 422 errors to debug validation issues
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_detail = e.response.json()
+                        self.logger.warning(
+                            f"HTTP error response: {error_detail}",
+                            extra={"status_code": e.response.status_code, "response": error_detail}
+                        )
+                    except Exception:
+                        # If we can't parse the response, just log the status code
+                        self.logger.warning(
+                            f"HTTP error (status {e.response.status_code}): {e}",
+                            extra={"status_code": e.response.status_code}
+                        )
+                
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # Exponential backoff
                     self.logger.warning(
