@@ -1,7 +1,7 @@
 """Working Memory implementation."""
 
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 
 
@@ -36,8 +36,8 @@ class WorkingMemory:
         self.max_size = max_size
         self._storage: Dict[str, tuple] = {}  # key -> (value, expiry_time)
         self._lock = asyncio.Lock()
-        self.created_at = datetime.utcnow()
-        self.last_accessed = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
+        self.last_accessed = datetime.now(timezone.utc)
     
     async def set(
         self,
@@ -65,11 +65,11 @@ class WorkingMemory:
             
             # Calculate expiry
             ttl = ttl or self.ttl
-            expiry_time = datetime.utcnow() + timedelta(seconds=ttl)
+            expiry_time = datetime.now(timezone.utc) + timedelta(seconds=ttl)
             
             # Store value
             self._storage[key] = (value, expiry_time)
-            self.last_accessed = datetime.utcnow()
+            self.last_accessed = datetime.now(timezone.utc)
     
     async def get(
         self,
@@ -93,11 +93,11 @@ class WorkingMemory:
             value, expiry_time = self._storage[key]
             
             # Check expiration
-            if datetime.utcnow() > expiry_time:
+            if datetime.now(timezone.utc) > expiry_time:
                 del self._storage[key]
                 return default
             
-            self.last_accessed = datetime.utcnow()
+            self.last_accessed = datetime.now(timezone.utc)
             return value
     
     async def delete(self, key: str) -> bool:
@@ -113,7 +113,7 @@ class WorkingMemory:
         async with self._lock:
             if key in self._storage:
                 del self._storage[key]
-                self.last_accessed = datetime.utcnow()
+                self.last_accessed = datetime.now(timezone.utc)
                 return True
             return False
     
@@ -121,7 +121,7 @@ class WorkingMemory:
         """Clear all stored values."""
         async with self._lock:
             self._storage.clear()
-            self.last_accessed = datetime.utcnow()
+            self.last_accessed = datetime.now(timezone.utc)
     
     async def keys(self) -> List[str]:
         """
@@ -131,7 +131,7 @@ class WorkingMemory:
             List of keys
         """
         async with self._lock:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             valid_keys = []
             expired_keys = []
             
@@ -165,7 +165,7 @@ class WorkingMemory:
             Dictionary of all stored values
         """
         async with self._lock:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             result = {}
             expired_keys = []
             
@@ -179,7 +179,7 @@ class WorkingMemory:
             for key in expired_keys:
                 del self._storage[key]
             
-            self.last_accessed = datetime.utcnow()
+            self.last_accessed = datetime.now(timezone.utc)
             return result
     
     def is_expired(self) -> bool:
@@ -189,7 +189,7 @@ class WorkingMemory:
         Returns:
             True if expired
         """
-        age = datetime.utcnow() - self.last_accessed
+        age = datetime.now(timezone.utc) - self.last_accessed
         return age.total_seconds() > self.ttl
     
     def get_stats(self) -> Dict[str, Any]:
@@ -206,7 +206,7 @@ class WorkingMemory:
             "ttl": self.ttl,
             "created_at": self.created_at.isoformat(),
             "last_accessed": self.last_accessed.isoformat(),
-            "age_seconds": (datetime.utcnow() - self.created_at).total_seconds()
+            "age_seconds": (datetime.now(timezone.utc) - self.created_at).total_seconds()
         }
     
     async def get_statistics(self) -> Dict[str, Any]:

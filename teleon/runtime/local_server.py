@@ -5,7 +5,7 @@ import importlib
 import inspect
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -112,7 +112,7 @@ class LocalServer:
             return {
                 "status": "healthy",
                 "agents_loaded": len(self.agents),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         
         @self.app.get("/agents")
@@ -157,7 +157,7 @@ class LocalServer:
             import uuid
             execution_id = str(uuid.uuid4())
             
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             
             try:
                 # Execute the agent
@@ -167,7 +167,7 @@ class LocalServer:
                     result = func(**request.input)
                 
                 # Calculate duration
-                duration = (datetime.utcnow() - start_time).total_seconds() * 1000
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
                 
                 # Track actual cost from execution context
                 cost = 0.0
@@ -198,7 +198,7 @@ class LocalServer:
                 )
                 
             except Exception as e:
-                duration = (datetime.utcnow() - start_time).total_seconds() * 1000
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
                 
                 return ExecuteResponse(
                     execution_id=execution_id,

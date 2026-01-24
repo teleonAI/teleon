@@ -10,7 +10,7 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from enum import Enum
 import asyncio
@@ -92,7 +92,7 @@ class Backend:
         self.avg_response_time_ms = 0.0
         
         # Timing
-        self.last_health_check = datetime.utcnow()
+        self.last_health_check = datetime.now(timezone.utc)
 
 
 class LoadBalancer:
@@ -339,7 +339,7 @@ class CircuitBreaker:
         if self.state == CircuitBreakerState.OPEN:
             # Check if recovery timeout has passed
             if self.opened_at:
-                elapsed = (datetime.utcnow() - self.opened_at).total_seconds()
+                elapsed = (datetime.now(timezone.utc) - self.opened_at).total_seconds()
                 if elapsed >= self.recovery_timeout:
                     self._transition_to_half_open()
                     return False
@@ -360,7 +360,7 @@ class CircuitBreaker:
     
     def record_failure(self):
         """Record failed request."""
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime.now(timezone.utc)
         
         if self.state == CircuitBreakerState.HALF_OPEN:
             self._transition_to_open()
@@ -374,7 +374,7 @@ class CircuitBreaker:
     def _transition_to_open(self):
         """Transition to OPEN state."""
         self.state = CircuitBreakerState.OPEN
-        self.opened_at = datetime.utcnow()
+        self.opened_at = datetime.now(timezone.utc)
         self.success_count = 0
         
         self.logger.warning(

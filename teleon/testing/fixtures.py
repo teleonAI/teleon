@@ -9,7 +9,7 @@ Features:
 """
 
 from typing import Any, Dict, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from teleon.config.agent_config import AgentConfig
@@ -65,7 +65,7 @@ def create_test_context(
     ctx = ExecutionContext(
         agent_name=agent_name,
         execution_id=execution_id,
-        started_at=datetime.utcnow()
+        started_at=datetime.now(timezone.utc)
     )
     
     # Add custom attributes
@@ -201,7 +201,7 @@ def create_test_events(
     return [
         {
             "event_type": event_type,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "data": {"index": i}
         }
         for i in range(count)

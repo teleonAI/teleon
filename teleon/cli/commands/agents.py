@@ -71,8 +71,6 @@ def list(
             features.append("🏭 Helix")
         if info.get('cortex'):
             features.append("🧠 Cortex")
-        if info.get('nexusnet'):
-            features.append("🌐 NexusNet")
         features_str = " ".join(features) if features else "Basic"
         
         table.add_row(
@@ -142,18 +140,6 @@ def inspect(
                 console.print(f"  {key}: {value}")
         else:
             console.print(f"  Enabled: {cortex}")
-    
-    # NexusNet configuration
-    if agent.get('nexusnet'):
-        console.print("\n[bold]🌐 NexusNet Configuration:[/bold]")
-        nexusnet = agent['nexusnet']
-        if isinstance(nexusnet, dict):
-            if 'capabilities' in nexusnet:
-                console.print(f"  Capabilities: {', '.join(nexusnet['capabilities'])}")
-            if 'collaborate' in nexusnet:
-                console.print(f"  Collaboration: {nexusnet['collaborate']}")
-        else:
-            console.print(f"  Enabled: {nexusnet}")
     
     # Parameters
     if agent.get('parameters'):
@@ -250,7 +236,6 @@ def stats():
     total = len(all_agents)
     with_helix = sum(1 for a in all_agents.values() if a.get('helix'))
     with_cortex = sum(1 for a in all_agents.values() if a.get('cortex'))
-    with_nexusnet = sum(1 for a in all_agents.values() if a.get('nexusnet'))
     
     # Count by model
     models = {}
@@ -263,7 +248,6 @@ def stats():
     console.print(f"\n[bold]Features Enabled:[/bold]")
     console.print(f"  🏭 Helix: {with_helix} ({with_helix/total*100:.1f}%)")
     console.print(f"  🧠 Cortex: {with_cortex} ({with_cortex/total*100:.1f}%)")
-    console.print(f"  🌐 NexusNet: {with_nexusnet} ({with_nexusnet/total*100:.1f}%)")
     
     console.print(f"\n[bold]Models Used:[/bold]")
     for model, count in sorted(models.items(), key=lambda x: x[1], reverse=True):

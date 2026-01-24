@@ -5,7 +5,7 @@ Teleon Client - User authentication and agent registration
 import os
 from typing import Optional, Dict, Any, Callable, List
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 import httpx
 
 
@@ -226,7 +226,7 @@ class TeleonClient:
         max_tokens: int = 500,
         helix: Optional[Dict[str, Any]] = None,
         cortex: Optional[Dict[str, Any]] = None,
-        nexusnet: Optional[Dict[str, Any]] = None,
+        sentinel: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """
@@ -240,7 +240,7 @@ class TeleonClient:
             max_tokens: Max tokens
             helix: Helix runtime configuration (auto-scaling, health checks)
             cortex: Cortex memory configuration (learning, memory types)
-            nexusnet: NexusNet collaboration configuration (multi-agent)
+            sentinel: Sentinel safety and compliance configuration
             **kwargs: Additional configuration
         
         Returns:
@@ -252,7 +252,7 @@ class TeleonClient:
                 name="my-agent",
                 helix={'min': 2, 'max': 10, 'target_cpu': 70},
                 cortex={'learning': True, 'memory_types': ['episodic', 'semantic']},
-                nexusnet={'capabilities': ['research'], 'collaborate': True}
+                sentinel={'content_filtering': True, 'pii_detection': True}
             )
             async def my_agent(input: str):
                 return process(input)
@@ -283,10 +283,10 @@ class TeleonClient:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "parameters": params,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "helix": helix,
                 "cortex": cortex,
-                "nexusnet": nexusnet,
+                "sentinel": sentinel,
                 "config": kwargs
             }
             
@@ -305,7 +305,7 @@ class TeleonClient:
     def _generate_agent_id(self, name: str) -> str:
         """Generate a unique agent ID."""
         # Combine user ID and agent name for uniqueness
-        unique_str = f"{self.user_id}:{name}:{datetime.utcnow().isoformat()}"
+        unique_str = f"{self.user_id}:{name}:{datetime.now(timezone.utc).isoformat()}"
         hash_id = hashlib.sha256(unique_str.encode()).hexdigest()[:16]
         return f"agent_{hash_id}"
     
@@ -418,19 +418,19 @@ class TeleonClient:
         agent_id: str,
         enable_helix: bool = True,
         enable_cortex: bool = True,
-        enable_nexusnet: bool = True
+        enable_sentinel: bool = True
     ) -> Dict[str, Any]:
         """
         Initialize runtime features for an agent.
         
-        This sets up Helix, Cortex, and NexusNet for the agent based on
+        This sets up Helix and Cortex for the agent based on
         its configuration.
         
         Args:
             agent_id: Agent ID to initialize
             enable_helix: Enable Helix runtime
             enable_cortex: Enable Cortex memory
-            enable_nexusnet: Enable NexusNet collaboration
+            enable_sentinel: Enable Sentinel safety and compliance
         
         Returns:
             Dictionary with initialized components
@@ -480,25 +480,19 @@ class TeleonClient:
             
             components['cortex'] = cortex
         
-        # Initialize NexusNet if configured
-        if enable_nexusnet and agent_info.get('nexusnet'):
-            from teleon.nexusnet import get_registry
+        # Initialize Sentinel if configured
+        if enable_sentinel and agent_info.get('sentinel'):
+            from teleon.sentinel.integration import register_agent_with_sentinel
             
-            nexusnet_config = agent_info['nexusnet']
-            registry = get_registry()
+            sentinel_config = agent_info['sentinel']
+            sentinel_engine = await register_agent_with_sentinel(
+                agent_id=agent_id,
+                sentinel_config=sentinel_config,
+                agent_name=agent_info['name']
+            )
             
-            # Register capabilities
-            if 'capabilities' in nexusnet_config:
-                # Register agent with NexusNet
-                await registry.register(
-                    agent_id=agent_id,
-                    name=agent_info['name'],
-                    capabilities=nexusnet_config['capabilities'],  # List of strings
-                    description=agent_info['description']
-                )
-            
-            components['nexusnet_registry'] = registry
-            components['nexusnet_config'] = nexusnet_config
+            components['sentinel_engine'] = sentinel_engine
+            components['sentinel_config'] = sentinel_config
         
         return components
 

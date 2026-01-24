@@ -5,7 +5,7 @@ Combines routing, rate limiting, auth, and transformation.
 """
 
 from typing import Any, Dict, List, Optional, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from collections import defaultdict
 import asyncio
@@ -78,7 +78,7 @@ class Router:
 class RateLimit(BaseModel):
     """Rate limit state."""
     requests: int = 0
-    window_start: datetime = Field(default_factory=datetime.utcnow)
+    window_start: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     blocked_until: Optional[datetime] = None
 
 
@@ -98,7 +98,7 @@ class RateLimiter:
     async def check_limit(self, client_id: str) -> bool:
         """Check if request is allowed."""
         limit = self.limits[client_id]
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Check if blocked
         if limit.blocked_until and now < limit.blocked_until:
@@ -128,7 +128,7 @@ class RequestTransformer:
         """Transform request headers."""
         # Add default headers
         headers.setdefault("X-Gateway-Version", "1.0")
-        headers.setdefault("X-Request-ID", str(datetime.utcnow().timestamp()))
+        headers.setdefault("X-Request-ID", str(datetime.now(timezone.utc).timestamp()))
         return headers
     
     def transform_body(self, body: Any) -> Any:
@@ -144,7 +144,7 @@ class ResponseTransformer:
         return {
             "data": response,
             "metadata": {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0"
             }
         }

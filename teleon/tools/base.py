@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -31,7 +31,7 @@ class ToolResult(BaseModel):
     # Execution info
     tool_name: str = Field(..., description="Name of the tool")
     execution_time_ms: Optional[float] = Field(None, description="Execution time in ms")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Execution timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Execution timestamp")
 
 
 class ToolSchema(BaseModel):

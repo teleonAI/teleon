@@ -104,6 +104,8 @@ class RedisStorage(StorageBackend):
         super().__init__(config)
         self.redis_config: RedisConfig = config or RedisConfig()
         self._client: Optional[Redis] = None
+        self._connection_retries = 0
+        self._max_retries = 3
     
     async def initialize(self) -> None:
         """Initialize Redis connection."""
@@ -188,10 +190,45 @@ class RedisStorage(StorageBackend):
                 "total_operations": self.metrics.total_operations if self.metrics else 0,
             }
     
+    async def _ensure_connected(self) -> None:
+        """
+        Ensure Redis connection is alive, reconnect if needed.
+        
+        Raises:
+            ConnectionError: If connection cannot be established
+        """
+        if not self._client:
+            await self.initialize()
+            return
+        
+        try:
+            await asyncio.wait_for(self._client.ping(), timeout=2.0)
+            self._connection_retries = 0  # Reset on success
+        except (RedisConnectionError, asyncio.TimeoutError, AttributeError) as e:
+            logger.warning(f"Redis connection lost, reconnecting... ({e})")
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            
+            self._client = None
+            self._connection_retries += 1
+            
+            if self._connection_retries <= self._max_retries:
+                await self.initialize()
+            else:
+                raise ConnectionError(
+                    f"Failed to reconnect to Redis after {self._max_retries} attempts",
+                    operation="reconnect"
+                )
+    
     async def shutdown(self) -> None:
         """Shutdown Redis connection."""
         if self._client:
-            await self._client.close()
+            try:
+                await self._client.close()
+            except Exception as e:
+                logger.warning(f"Error closing Redis connection: {e}")
             self._client = None
         
         await super().shutdown()
@@ -208,22 +245,34 @@ class RedisStorage(StorageBackend):
         return key
     
     def _serialize(self, value: Any) -> str:
-        """Serialize value to JSON with datetime support."""
+        """Serialize value to JSON with comprehensive error handling."""
         def json_encoder(obj):
             """Custom JSON encoder for datetime and Pydantic models."""
             if isinstance(obj, datetime):
                 return obj.isoformat()
             elif isinstance(obj, BaseModel):
-                return obj.model_dump()
+                try:
+                    return obj.model_dump(mode='json', exclude_none=True)
+                except Exception:
+                    # Fallback to dict() if model_dump fails
+                    try:
+                        return obj.dict() if hasattr(obj, 'dict') else str(obj)
+                    except Exception:
+                        return str(obj)
             elif hasattr(obj, '__dict__'):
-                return obj.__dict__
+                # Handle custom objects
+                try:
+                    return {k: v for k, v in obj.__dict__.items() 
+                           if not k.startswith('_')}
+                except Exception:
+                    return str(obj)
             raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
         
         try:
-            return json.dumps(value, default=json_encoder)
+            return json.dumps(value, default=json_encoder, ensure_ascii=False)
         except (TypeError, ValueError) as e:
             raise SerializationError(
-                f"Failed to serialize value: {str(e)}",
+                f"Failed to serialize value of type {type(value).__name__}: {str(e)}",
                 operation="serialize"
             )
     
@@ -245,7 +294,7 @@ class RedisStorage(StorageBackend):
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Store a value in Redis.
+        Store a value in Redis with automatic reconnection.
         
         Args:
             key: Storage key
@@ -256,8 +305,7 @@ class RedisStorage(StorageBackend):
         Returns:
             True if stored successfully
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="set", key=key)
+        await self._ensure_connected()
         
         try:
             redis_key = self._make_key(key)
@@ -315,7 +363,7 @@ class RedisStorage(StorageBackend):
         default: Optional[Any] = None
     ) -> Optional[Any]:
         """
-        Retrieve a value from Redis.
+        Retrieve a value from Redis with automatic reconnection.
         
         Args:
             key: Storage key
@@ -324,8 +372,7 @@ class RedisStorage(StorageBackend):
         Returns:
             Stored value or default
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="get", key=key)
+        await self._ensure_connected()
         
         try:
             redis_key = self._make_key(key)
@@ -358,7 +405,7 @@ class RedisStorage(StorageBackend):
     
     async def delete(self, key: str) -> bool:
         """
-        Delete a value from Redis.
+        Delete a value from Redis with automatic reconnection.
         
         Args:
             key: Storage key
@@ -366,8 +413,7 @@ class RedisStorage(StorageBackend):
         Returns:
             True if deleted, False if not found
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="delete", key=key)
+        await self._ensure_connected()
         
         try:
             redis_key = self._make_key(key)
@@ -388,7 +434,7 @@ class RedisStorage(StorageBackend):
     
     async def exists(self, key: str) -> bool:
         """
-        Check if a key exists in Redis.
+        Check if a key exists in Redis with automatic reconnection.
         
         Args:
             key: Storage key
@@ -396,8 +442,7 @@ class RedisStorage(StorageBackend):
         Returns:
             True if key exists
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="exists", key=key)
+        await self._ensure_connected()
         
         try:
             redis_key = self._make_key(key)
@@ -417,7 +462,7 @@ class RedisStorage(StorageBackend):
         limit: Optional[int] = None
     ) -> List[str]:
         """
-        List keys matching a pattern.
+        List keys matching a pattern with automatic reconnection.
         
         Args:
             pattern: Wildcard pattern
@@ -426,8 +471,7 @@ class RedisStorage(StorageBackend):
         Returns:
             List of matching keys (without prefix)
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="list_keys")
+        await self._ensure_connected()
         
         try:
             redis_pattern = self._make_key(pattern)
@@ -565,7 +609,7 @@ class RedisStorage(StorageBackend):
     
     async def get_many(self, keys: List[str]) -> Dict[str, Any]:
         """
-        Get multiple values efficiently using MGET.
+        Get multiple values efficiently using MGET with automatic reconnection.
         
         Args:
             keys: List of storage keys
@@ -573,8 +617,7 @@ class RedisStorage(StorageBackend):
         Returns:
             Dictionary of key-value pairs
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="get_many")
+        await self._ensure_connected()
         
         if not keys:
             return {}
@@ -602,7 +645,7 @@ class RedisStorage(StorageBackend):
         ttl: Optional[int] = None
     ) -> int:
         """
-        Set multiple values efficiently using pipeline.
+        Set multiple values efficiently using pipeline with automatic reconnection.
         
         Args:
             items: Dictionary of key-value pairs
@@ -611,8 +654,7 @@ class RedisStorage(StorageBackend):
         Returns:
             Number of items stored
         """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="set_many")
+        await self._ensure_connected()
         
         if not items:
             return 0

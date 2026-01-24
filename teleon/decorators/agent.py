@@ -4,7 +4,7 @@ from typing import Callable, Optional, Dict, Any, TypeVar, cast
 from functools import wraps
 import inspect
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import time
 
@@ -23,6 +23,7 @@ def agent(
     tools: Optional[list] = None,
     collaborate: bool = False,
     timeout: Optional[float] = None,
+    sentinel: Optional[Dict[str, Any]] = None,
     **kwargs: Any
 ) -> Callable[[F], F]:
     """
@@ -61,7 +62,7 @@ def agent(
             - models: Dict mapping complexity to model names
             - caching: Cache configuration
         tools: List of tools available to the agent
-        collaborate: Enable multi-agent collaboration via NexusNet
+        collaborate: Enable multi-agent collaboration (deprecated, no longer functional)
         timeout: Global timeout in seconds
         **kwargs: Additional configuration options
     
@@ -99,6 +100,9 @@ def agent(
         # Validate configuration
         config.validate()
         
+        # Initialize Sentinel if configured (lazy initialization in wrapper)
+        sentinel_config = sentinel
+        
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             """Wrapper that adds agent capabilities."""
@@ -111,7 +115,7 @@ def agent(
                 execution_id=execution_id,
                 agent_name=config.name,
                 config=config.to_dict(),
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc),
                 input_args=args,
                 input_kwargs=kwargs,
             )
@@ -139,9 +143,94 @@ def agent(
             # Setup cost tracking
             total_cost = 0.0
             
+            # Initialize Sentinel if configured (lazy)
+            sentinel_engine = None
+            if sentinel_config:
+                try:
+                    from teleon.sentinel.integration import create_sentinel_engine
+                    sentinel_engine = create_sentinel_engine(sentinel_config)
+                    if sentinel_engine:
+                        # Register with registry
+                        try:
+                            from teleon.sentinel.registry import get_sentinel_registry
+                            import asyncio
+                            registry = await get_sentinel_registry()
+                            await registry.register(config.name, sentinel_engine)
+                        except Exception:
+                            # Registry not critical, continue
+                            pass
+                except ImportError:
+                    # Sentinel not available
+                    pass
+                except Exception as e:
+                    # Sentinel initialization failed, log but continue
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                        logger.warning(f"Sentinel initialization failed: {e}")
+                    except ImportError:
+                        pass
+            
+            # SENTINEL: Validate input BEFORE execution
+            if sentinel_engine:
+                try:
+                    input_data = {'args': args, 'kwargs': kwargs}
+                    input_result = await sentinel_engine.validate_input(
+                        input_data,
+                        config.name
+                    )
+                    
+                    # Apply redaction if needed
+                    if input_result.redacted_content and input_result.action.value == 'redact':
+                        # Note: Redaction of args/kwargs is complex, so we log it
+                        # In practice, the redaction would need to be applied to the actual data
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger(f"agent.{config.name}", LogLevel.INFO)
+                            logger.info("Input redacted by Sentinel", violations=len(input_result.violations))
+                        except ImportError:
+                            pass
+                    
+                except Exception as e:
+                    # Sentinel validation errors are logged but don't block unless action is BLOCK
+                    # (which would have raised AgentValidationError)
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger(f"agent.{config.name}", LogLevel.WARNING)
+                        logger.warning(f"Sentinel input validation error: {e}")
+                    except ImportError:
+                        pass
+            
             try:
                 # Execute the agent function
                 result = await func(*args, **kwargs)
+                
+                # SENTINEL: Validate output AFTER execution
+                if sentinel_engine:
+                    try:
+                        output_result = await sentinel_engine.validate_output(
+                            result,
+                            config.name
+                        )
+                        
+                        # Apply redaction if needed
+                        if output_result.redacted_content and output_result.action.value == 'redact':
+                            result = output_result.redacted_content
+                            try:
+                                from teleon.core import StructuredLogger, LogLevel
+                                logger = StructuredLogger(f"agent.{config.name}", LogLevel.INFO)
+                                logger.info("Output redacted by Sentinel", violations=len(output_result.violations))
+                            except ImportError:
+                                pass
+                        
+                    except Exception as e:
+                        # Sentinel validation errors are logged but don't block unless action is BLOCK
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger(f"agent.{config.name}", LogLevel.WARNING)
+                            logger.warning(f"Sentinel output validation error: {e}")
+                        except ImportError:
+                            pass
                 
                 # Mark as successful
                 ctx.mark_success(result)

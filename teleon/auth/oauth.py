@@ -10,7 +10,7 @@ Provides:
 
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import httpx
 from urllib.parse import urlencode
 
@@ -46,7 +46,7 @@ class OAuth2Token:
     
     def __post_init__(self):
         if self.created_at is None:
-            self.created_at = datetime.utcnow()
+            self.created_at = datetime.now(timezone.utc)
     
     @property
     def is_expired(self) -> bool:
@@ -55,7 +55,7 @@ class OAuth2Token:
             return False
         
         expiry_time = self.created_at + timedelta(seconds=self.expires_in)
-        return datetime.utcnow() >= expiry_time
+        return datetime.now(timezone.utc) >= expiry_time
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

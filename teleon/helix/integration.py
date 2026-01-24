@@ -7,7 +7,7 @@ and the Helix production runtime system.
 
 from typing import Any, Dict, Optional, Callable
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 
 from teleon.helix.runtime import AgentRuntime, RuntimeConfig, ResourceConfig, get_runtime
 from teleon.helix.health import HealthCheck, CheckType
@@ -57,8 +57,7 @@ class AgentWrapper:
         agent_id: str,
         agent_func: Callable,
         helix_config: Optional[Dict[str, Any]] = None,
-        cortex: Optional[Any] = None,
-        nexusnet: Optional[Any] = None
+        cortex: Optional[Any] = None
     ):
         """
         Initialize agent wrapper.
@@ -68,13 +67,11 @@ class AgentWrapper:
             agent_func: Agent function to wrap
             helix_config: Helix configuration
             cortex: Cortex memory instance
-            nexusnet: NexusNet collaboration instance
         """
         self.agent_id = agent_id
         self.agent_func = agent_func
         self.helix_config = helix_config or {}
         self.cortex = cortex
-        self.nexusnet = nexusnet
         
         self.logger = StructuredLogger(f"agent.{agent_id}", LogLevel.INFO)
         self._execution_count = 0
@@ -91,7 +88,7 @@ class AgentWrapper:
         - Memory recording
         """
         execution_id = f"{self.agent_id}_{self._execution_count}"
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         self._execution_count += 1
         
@@ -103,7 +100,7 @@ class AgentWrapper:
             result = await self.agent_func(*args, **kwargs)
             
             # Post-execution hook
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             await self._post_execution(
                 execution_id,
                 args,
@@ -117,7 +114,7 @@ class AgentWrapper:
             
         except Exception as e:
             self._error_count += 1
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
             
             self.logger.error(
                 "Agent execution failed",
@@ -209,7 +206,6 @@ async def register_agent_with_helix(
     agent_func: Callable,
     helix_config: Dict[str, Any],
     cortex: Optional[Any] = None,
-    nexusnet: Optional[Any] = None,
     runtime: Optional[AgentRuntime] = None
 ) -> AgentWrapper:
     """
@@ -223,7 +219,6 @@ async def register_agent_with_helix(
         agent_func: Agent function
         helix_config: Helix configuration from decorator
         cortex: Optional Cortex memory instance
-        nexusnet: Optional NexusNet instance
         runtime: Optional runtime instance (creates one if None)
     
     Returns:
@@ -256,8 +251,7 @@ async def register_agent_with_helix(
         agent_id=agent_id,
         agent_func=agent_func,
         helix_config=helix_config,
-        cortex=cortex,
-        nexusnet=nexusnet
+        cortex=cortex
     )
     
     # Extract Helix configuration

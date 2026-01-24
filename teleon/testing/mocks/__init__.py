@@ -10,7 +10,7 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 try:
@@ -72,7 +72,7 @@ class MockLLM:
         
         # Track call
         call = {
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "request": request,
             "model": request.model,
             "messages": request.messages
@@ -199,7 +199,7 @@ class MockTool:
         
         # Track call
         call = {
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "args": args,
             "kwargs": kwargs
         }
@@ -269,7 +269,7 @@ class MockMemory:
             "operation": "set",
             "key": key,
             "value": value,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         })
         self.storage[key] = value
     
@@ -278,7 +278,7 @@ class MockMemory:
         self.calls.append({
             "operation": "get",
             "key": key,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         })
         return self.storage.get(key)
     
@@ -287,7 +287,7 @@ class MockMemory:
         self.calls.append({
             "operation": "delete",
             "key": key,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         })
         if key in self.storage:
             del self.storage[key]
@@ -298,7 +298,7 @@ class MockMemory:
             "operation": "search",
             "query": query,
             "limit": limit,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         })
         # Simple search - return all values
         return list(self.storage.values())[:limit]
@@ -353,7 +353,7 @@ class MockMessageBus:
             "topic": topic,
             "message": message,
             "priority": priority,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         }
         self.messages.append(msg)
         

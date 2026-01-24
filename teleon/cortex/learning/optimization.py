@@ -7,7 +7,7 @@ to recommend better model selections, caching strategies, and configurations.
 
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 
 from teleon.cortex.memory.episodic import Episode
@@ -142,7 +142,7 @@ class CostOptimizer:
             Comprehensive optimization report
         """
         # Filter recent episodes
-        cutoff = datetime.utcnow() - timedelta(hours=time_window_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=time_window_hours)
         recent_episodes = [e for e in episodes if e.timestamp >= cutoff]
         
         if not recent_episodes:

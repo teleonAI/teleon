@@ -10,7 +10,7 @@ Features:
 """
 
 from typing import Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 import asyncio
 import psutil
@@ -20,6 +20,7 @@ from teleon.core import (
     StructuredLogger,
     LogLevel,
 )
+from teleon.helix.llm_metrics import LLMMetrics
 
 
 class ScalingMetrics(BaseModel):
@@ -29,7 +30,7 @@ class ScalingMetrics(BaseModel):
     memory_percent: float = Field(0.0, description="Average memory usage")
     request_rate: float = Field(0.0, description="Requests per second")
     
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ScalingPolicy(BaseModel):
@@ -65,6 +66,10 @@ class Scaler:
         """Initialize scaler."""
         self.policies: Dict[str, ScalingPolicy] = {}
         self.last_scale_action: Dict[str, datetime] = {}
+        
+        # Track scaling history to prevent oscillation
+        self.scaling_history: Dict[str, List[Dict[str, Any]]] = {}
+        self.max_history_per_target = 10
         
         self.lock = asyncio.Lock()
         self.logger = StructuredLogger("scaler", LogLevel.INFO)
@@ -128,7 +133,7 @@ class Scaler:
         # Check cooldown
         last_action = self.last_scale_action.get(target_id)
         if last_action:
-            time_since_last = (datetime.utcnow() - last_action).total_seconds()
+            time_since_last = (datetime.now(timezone.utc) - last_action).total_seconds()
             
             # Check if in cooldown period
             if metrics.cpu_percent > policy.target_cpu_percent:
@@ -138,21 +143,51 @@ class Scaler:
                 if time_since_last < policy.scale_down_cooldown:
                     return None
         
-        # Determine if scaling needed
+        # Determine if scaling needed with hysteresis to prevent oscillation
         scale_up = False
         scale_down = False
         
-        # Check CPU
-        if metrics.cpu_percent > policy.target_cpu_percent:
+        # Hysteresis: Use different thresholds for scale-up vs scale-down
+        # Scale up threshold: 100% of target (aggressive)
+        # Scale down threshold: 50% of target (conservative)
+        cpu_scale_up_threshold = policy.target_cpu_percent
+        cpu_scale_down_threshold = policy.target_cpu_percent * 0.5
+        memory_scale_up_threshold = policy.target_memory_percent
+        memory_scale_down_threshold = policy.target_memory_percent * 0.5
+        
+        # Check CPU with hysteresis
+        if metrics.cpu_percent > cpu_scale_up_threshold:
             scale_up = True
-        elif metrics.cpu_percent < policy.target_cpu_percent * 0.5:  # Less than 50% of target
+        elif metrics.cpu_percent < cpu_scale_down_threshold:
+            # Only scale down if we're consistently below threshold
+            # Check if we've been below threshold for a while
             scale_down = True
         
-        # Check memory
-        if metrics.memory_percent > policy.target_memory_percent:
+        # Check memory with hysteresis
+        if metrics.memory_percent > memory_scale_up_threshold:
             scale_up = True
-        elif metrics.memory_percent < policy.target_memory_percent * 0.5:
-            scale_down = True if not scale_up else False
+        elif metrics.memory_percent < memory_scale_down_threshold and not scale_up:
+            scale_down = True
+        
+        # Check for oscillation: rapid up/down cycles
+        if target_id in self.scaling_history:
+            recent_scales = self.scaling_history[target_id][-3:]  # Last 3 scales
+            if len(recent_scales) >= 2:
+                # Check if we're oscillating (up then down or vice versa)
+                directions = [s.get("direction") for s in recent_scales]
+                if len(directions) >= 2:
+                    is_oscillating = (
+                        (directions[-1] == "up" and directions[-2] == "down") or
+                        (directions[-1] == "down" and directions[-2] == "up")
+                    )
+                    if is_oscillating:
+                        # Suppress scaling to prevent oscillation
+                        self.logger.warning(
+                            "Oscillation detected - suppressing scaling",
+                            target_id=target_id,
+                            recent_directions=directions
+                        )
+                        return None
         
         # Calculate desired instances
         if scale_up:
@@ -162,6 +197,22 @@ class Scaler:
             )
             
             if desired > current_instances:
+                # Record scaling decision
+                async with self.lock:
+                    if target_id not in self.scaling_history:
+                        self.scaling_history[target_id] = []
+                    self.scaling_history[target_id].append({
+                        "timestamp": datetime.now(timezone.utc),
+                        "direction": "up",
+                        "from": current_instances,
+                        "to": desired,
+                        "cpu": metrics.cpu_percent,
+                        "memory": metrics.memory_percent
+                    })
+                    # Keep only recent history
+                    if len(self.scaling_history[target_id]) > self.max_history_per_target:
+                        self.scaling_history[target_id] = self.scaling_history[target_id][-self.max_history_per_target:]
+                
                 self.logger.info(
                     "Scaling up",
                     target_id=target_id,
@@ -179,6 +230,22 @@ class Scaler:
             )
             
             if desired < current_instances:
+                # Record scaling decision
+                async with self.lock:
+                    if target_id not in self.scaling_history:
+                        self.scaling_history[target_id] = []
+                    self.scaling_history[target_id].append({
+                        "timestamp": datetime.now(timezone.utc),
+                        "direction": "down",
+                        "from": current_instances,
+                        "to": desired,
+                        "cpu": metrics.cpu_percent,
+                        "memory": metrics.memory_percent
+                    })
+                    # Keep only recent history
+                    if len(self.scaling_history[target_id]) > self.max_history_per_target:
+                        self.scaling_history[target_id] = self.scaling_history[target_id][-self.max_history_per_target:]
+                
                 self.logger.info(
                     "Scaling down",
                     target_id=target_id,
@@ -188,6 +255,76 @@ class Scaler:
                     memory=metrics.memory_percent
                 )
                 return desired
+        
+        return None
+    
+    async def evaluate_llm_scaling(
+        self,
+        target_id: str,
+        llm_metrics: LLMMetrics,
+        current_instances: int
+    ) -> Optional[int]:
+        """
+        Evaluate scaling based on LLM metrics.
+        
+        Integrates with LLM-specific metrics like token throughput,
+        queue depth, and cost constraints.
+        
+        Args:
+            target_id: Target identifier
+            llm_metrics: LLM metrics
+            current_instances: Current instance count
+        
+        Returns:
+            Desired instance count or None if no scaling needed
+        """
+        # Try to get LLM scaler from llm_scaling module
+        try:
+            from teleon.helix.llm_scaling import get_llm_scaler
+            
+            llm_scaler = get_llm_scaler()
+            desired = await llm_scaler.evaluate_scaling(
+                target_id,
+                llm_metrics,
+                current_instances
+            )
+            
+            if desired:
+                return desired
+        except ImportError:
+            self.logger.warning("LLM scaling not available, falling back to standard scaling")
+        
+        # Fallback: use overload detection from LLMMetrics
+        if llm_metrics.is_overloaded():
+            policy = self.policies.get(target_id)
+            if policy:
+                desired = min(
+                    current_instances + policy.scale_up_step,
+                    policy.max_instances
+                )
+                if desired > current_instances:
+                    self.logger.info(
+                        "LLM agent overloaded - scaling up",
+                        target_id=target_id,
+                        queue_depth=llm_metrics.queue_depth,
+                        p95_latency=llm_metrics.p95_latency_ms
+                    )
+                    return desired
+        
+        elif llm_metrics.is_underutilized():
+            policy = self.policies.get(target_id)
+            if policy:
+                desired = max(
+                    current_instances - policy.scale_down_step,
+                    policy.min_instances
+                )
+                if desired < current_instances:
+                    self.logger.info(
+                        "LLM agent underutilized - scaling down",
+                        target_id=target_id,
+                        utilization=llm_metrics.get_utilization()
+                    )
+                    return desired
         
         return None
     
@@ -257,7 +394,7 @@ class Scaler:
     async def record_scaling_action(self, target_id: str):
         """Record that a scaling action occurred."""
         async with self.lock:
-            self.last_scale_action[target_id] = datetime.utcnow()
+            self.last_scale_action[target_id] = datetime.now(timezone.utc)
     
     async def start_monitoring(self, runtime):
         """

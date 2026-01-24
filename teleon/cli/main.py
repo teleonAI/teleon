@@ -18,7 +18,7 @@ from teleon.cli.commands.push import app as push_app
 from teleon.cli.commands.agents import app as agents_app
 from teleon.cli.commands.helix import app as helix_app
 from teleon.cli.commands.cortex import app as cortex_app
-from teleon.cli.commands.nexusnet import app as nexusnet_app
+from teleon.cli.commands.sentinel import app as sentinel_app
 from teleon.cli.commands.auth import app as auth_app
 
 # Initialize Typer app
@@ -37,7 +37,7 @@ app.add_typer(push_app, name="push")
 app.add_typer(agents_app, name="agents")
 app.add_typer(helix_app, name="helix")
 app.add_typer(cortex_app, name="cortex")
-app.add_typer(nexusnet_app, name="nexusnet")
+app.add_typer(sentinel_app, name="sentinel")
 
 # Add login as a top-level command (alias to auth login)
 @app.command()

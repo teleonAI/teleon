@@ -3,12 +3,37 @@
 from typing import List, Dict, Optional, AsyncIterator
 import hashlib
 import json
+import time
+import os
 
 from teleon.llm.types import (
     LLMMessage, LLMResponse, LLMConfig, ProviderConfig, LLMRequest
 )
 from teleon.llm.providers.base import LLMProvider
 from teleon.llm.cache import ResponseCache
+
+# Try to import agent reporter for metrics
+try:
+    from teleon.helix.agent_reporter import get_agent_reporter
+    AGENT_REPORTER_AVAILABLE = True
+except ImportError:
+    AGENT_REPORTER_AVAILABLE = False
+
+# Model pricing for cost calculation (per 1K tokens)
+MODEL_PRICING = {
+    "gpt-4": {"input": 0.03, "output": 0.06},
+    "gpt-4-turbo": {"input": 0.01, "output": 0.03},
+    "gpt-4-turbo-preview": {"input": 0.01, "output": 0.03},
+    "gpt-4o": {"input": 0.005, "output": 0.015},
+    "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+    "gpt-3.5-turbo": {"input": 0.0005, "output": 0.0015},
+    "claude-3-opus": {"input": 0.015, "output": 0.075},
+    "claude-3-sonnet": {"input": 0.003, "output": 0.015},
+    "claude-3-haiku": {"input": 0.00025, "output": 0.00125},
+    "claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
+    "gemini-pro": {"input": 0.00025, "output": 0.0005},
+    "gemini-1.5-pro": {"input": 0.00125, "output": 0.005},
+}
 
 
 class LLMGateway:
@@ -21,15 +46,88 @@ class LLMGateway:
     - Response caching
     - Cost tracking
     - Automatic retry and fallback
+    - Automatic metrics reporting to Teleon Platform
     """
     
-    def __init__(self):
-        """Initialize the LLM Gateway."""
+    def __init__(self, enable_metrics_reporting: bool = True):
+        """
+        Initialize the LLM Gateway.
+        
+        Args:
+            enable_metrics_reporting: Whether to report metrics to Teleon Platform
+        """
         self.providers: Dict[str, LLMProvider] = {}
         self.cache: Optional[ResponseCache] = None
         self.total_cost = 0.0
         self.total_tokens = 0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
         self.request_count = 0
+        self.error_count = 0
+        
+        # Metrics reporting
+        self._enable_metrics = enable_metrics_reporting and AGENT_REPORTER_AVAILABLE
+        self._metrics_enabled_env = os.getenv("TELEON_METRICS_ENABLED", "true").lower() == "true"
+    
+    def _calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """
+        Calculate the cost of a request based on model pricing.
+        
+        Args:
+            model: Model name
+            input_tokens: Number of input tokens
+            output_tokens: Number of output tokens
+        
+        Returns:
+            Cost in USD
+        """
+        # Find matching pricing (try exact match, then prefix match)
+        pricing = MODEL_PRICING.get(model)
+        
+        if not pricing:
+            # Try prefix matching
+            for model_name, prices in MODEL_PRICING.items():
+                if model.startswith(model_name) or model_name.startswith(model.split("-")[0]):
+                    pricing = prices
+                    break
+        
+        if not pricing:
+            # Default pricing (GPT-4 level)
+            pricing = {"input": 0.03, "output": 0.06}
+        
+        input_cost = (input_tokens / 1000) * pricing["input"]
+        output_cost = (output_tokens / 1000) * pricing["output"]
+        
+        return input_cost + output_cost
+    
+    async def _report_request_metrics(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        latency_ms: float,
+        success: bool,
+        cost: float,
+        error_type: Optional[str] = None
+    ):
+        """Report request metrics to Teleon Platform."""
+        if not (self._enable_metrics and self._metrics_enabled_env):
+            return
+        
+        try:
+            reporter = get_agent_reporter()
+            await reporter.report_request(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                model=model,
+                success=success,
+                cost=cost,
+                error_type=error_type
+            )
+        except Exception:
+            # Don't let metrics reporting break the main flow
+            pass
     
     def register_provider(self, provider: LLMProvider) -> None:
         """
@@ -68,6 +166,8 @@ class LLMGateway:
         Returns:
             LLM response
         """
+        start_time = time.time()
+        
         # Check cache first
         if config.use_cache and self.cache:
             cache_key = self._generate_cache_key(messages, config)
@@ -84,12 +184,55 @@ class LLMGateway:
             raise ValueError(f"No provider available for model: {config.model}")
         
         # Generate completion
-        response = await selected_provider.complete(messages, config)
+        error_type = None
+        try:
+            response = await selected_provider.complete(messages, config)
+            success = True
+        except Exception as e:
+            self.error_count += 1
+            error_type = type(e).__name__
+            
+            # Report failed request
+            latency_ms = (time.time() - start_time) * 1000
+            await self._report_request_metrics(
+                model=config.model,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                success=False,
+                cost=0.0,
+                error_type=error_type
+            )
+            raise
+        
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+        
+        # Extract token counts
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
+        
+        # Calculate cost if not provided
+        cost = response.cost if response.cost else self._calculate_cost(
+            config.model, input_tokens, output_tokens
+        )
         
         # Update statistics
-        self.total_cost += response.cost or 0.0
-        self.total_tokens += response.usage.total_tokens
+        self.total_cost += cost
+        self.total_tokens += response.usage.total_tokens if response.usage else 0
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
         self.request_count += 1
+        
+        # Report metrics to Teleon Platform
+        await self._report_request_metrics(
+            model=config.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+            success=True,
+            cost=cost
+        )
         
         # Cache the response
         if config.use_cache and self.cache and config.cache_ttl:
@@ -197,17 +340,28 @@ class LLMGateway:
         return {
             "total_cost": self.total_cost,
             "total_tokens": self.total_tokens,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
             "request_count": self.request_count,
+            "error_count": self.error_count,
+            "success_rate": (
+                (self.request_count - self.error_count) / max(self.request_count, 1)
+            ),
             "avg_cost_per_request": self.total_cost / max(self.request_count, 1),
+            "avg_tokens_per_request": self.total_tokens / max(self.request_count, 1),
             "providers": list(self.providers.keys()),
-            "cache_enabled": self.cache is not None
+            "cache_enabled": self.cache is not None,
+            "metrics_reporting_enabled": self._enable_metrics and self._metrics_enabled_env
         }
     
     def reset_stats(self) -> None:
         """Reset statistics."""
         self.total_cost = 0.0
         self.total_tokens = 0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
         self.request_count = 0
+        self.error_count = 0
 
 
 # Global gateway instance (singleton)

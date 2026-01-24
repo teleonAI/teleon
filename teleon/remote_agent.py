@@ -50,7 +50,6 @@ class RemoteAgent:
         
         # Initialize sub-interfaces
         self.cortex = CortexInterface(self)
-        self.nexusnet = NexusNetInterface(self)
     
     async def execute(
         self,
@@ -329,93 +328,6 @@ class CortexInterface:
             raise CortexError(f"Failed to fetch memory stats: {str(e)}")
 
 
-class NexusNetInterface:
-    """
-    Interface for interacting with agent's NexusNet connections.
-    """
-    
-    def __init__(self, agent: RemoteAgent):
-        self.agent = agent
-    
-    async def get_connections(self) -> List[Dict[str, Any]]:
-        """
-        Get agent's NexusNet connections.
-        
-        Returns:
-            List of connected agents
-        """
-        try:
-            response = await self.agent.client.get(
-                f"{self.agent.base_url}/agents/{self.agent.agent_id}/nexusnet/connections"
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            raise NexusNetError(f"Failed to fetch connections: {str(e)}")
-    
-    async def send_message(
-        self,
-        to_agent: str,
-        message: Any,
-        priority: str = "NORMAL"
-    ) -> Dict[str, Any]:
-        """
-        Send message to another agent.
-        
-        Args:
-            to_agent: Target agent ID or name
-            message: Message content
-            priority: Message priority (LOW, NORMAL, HIGH, URGENT)
-        
-        Returns:
-            Message delivery confirmation
-        """
-        try:
-            response = await self.agent.client.post(
-                f"{self.agent.base_url}/agents/{self.agent.agent_id}/nexusnet/send",
-                json={
-                    "to": to_agent,
-                    "message": message,
-                    "priority": priority
-                }
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            raise NexusNetError(f"Failed to send message: {str(e)}")
-    
-    async def delegate_task(
-        self,
-        task: str,
-        to_agent: Optional[str] = None,
-        requirements: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Delegate task to another agent.
-        
-        Args:
-            task: Task description or ID
-            to_agent: Specific agent to delegate to (optional)
-            requirements: Task requirements for agent selection
-        
-        Returns:
-            Delegation result
-        """
-        try:
-            response = await self.agent.client.post(
-                f"{self.agent.base_url}/agents/{self.agent.agent_id}/nexusnet/delegate",
-                json={
-                    "task": task,
-                    "to_agent": to_agent,
-                    "requirements": requirements or {}
-                }
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            raise NexusNetError(f"Failed to delegate task: {str(e)}")
-
-
 # Exceptions
 class AgentExecutionError(Exception):
     """Raised when agent execution fails."""
@@ -449,10 +361,5 @@ class AgentScalingError(Exception):
 
 class CortexError(Exception):
     """Raised when Cortex operations fail."""
-    pass
-
-
-class NexusNetError(Exception):
-    """Raised when NexusNet operations fail."""
     pass
 

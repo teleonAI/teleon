@@ -10,8 +10,8 @@ Features:
 """
 
 from typing import Dict, Optional, Callable, Any
-from datetime import datetime, timedelta
-from pydantic import BaseModel, Field
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from enum import Enum
 import asyncio
 
@@ -20,6 +20,7 @@ from teleon.core import (
     StructuredLogger,
     LogLevel,
 )
+from teleon.helix.llm_metrics import LLMMetrics
 
 
 class HealthStatus(str, Enum):
@@ -57,28 +58,28 @@ class HealthCheck(BaseModel):
     # Delays
     initial_delay: int = Field(0, ge=0, description="Initial delay (seconds)")
     
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class HealthResult(BaseModel):
     """Health check result."""
-    
+
     status: HealthStatus = Field(..., description="Health status")
     message: Optional[str] = Field(None, description="Status message")
-    
+
     # Metadata
-    checked_at: datetime = Field(default_factory=datetime.utcnow)
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     response_time_ms: float = Field(0.0, description="Check response time")
-    
+
     # Counters
     consecutive_failures: int = Field(0, description="Consecutive failures")
     consecutive_successes: int = Field(0, description="Consecutive successes")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    model_config = ConfigDict()
+
+    @field_serializer('checked_at')
+    def serialize_datetime(self, value: datetime) -> str:
+        return value.isoformat() if value else None
 
 
 class HealthChecker:
@@ -382,6 +383,95 @@ class HealthChecker:
                 "unhealthy": status_counts[HealthStatus.UNHEALTHY],
                 "unknown": status_counts[HealthStatus.UNKNOWN]
             }
+    
+    async def check_llm_health(
+        self,
+        target_id: str,
+        llm_metrics: LLMMetrics,
+        cost_budget: Optional[float] = None
+    ) -> HealthResult:
+        """
+        Perform LLM-specific health checks.
+        
+        Checks:
+        - Token throughput within acceptable range
+        - Queue depth not excessive
+        - Latency within targets
+        - Cost within budget
+        
+        Args:
+            target_id: Target identifier
+            llm_metrics: LLM metrics
+            cost_budget: Optional cost budget per hour
+        
+        Returns:
+            Health result
+        """
+        issues = []
+        degraded = False
+        unhealthy = False
+        
+        # Check token throughput (should be > 0 if processing)
+        if llm_metrics.requests_per_minute > 0 and llm_metrics.tokens_per_second == 0:
+            issues.append("No token throughput despite active requests")
+            unhealthy = True
+        
+        # Check queue depth
+        if llm_metrics.queue_depth > 50:
+            issues.append(f"Excessive queue depth: {llm_metrics.queue_depth}")
+            unhealthy = True
+        elif llm_metrics.queue_depth > 20:
+            issues.append(f"High queue depth: {llm_metrics.queue_depth}")
+            degraded = True
+        
+        # Check latency
+        if llm_metrics.p95_latency_ms > 30000:  # 30s
+            issues.append(f"Very high P95 latency: {llm_metrics.p95_latency_ms:.0f}ms")
+            unhealthy = True
+        elif llm_metrics.p95_latency_ms > 10000:  # 10s
+            issues.append(f"High P95 latency: {llm_metrics.p95_latency_ms:.0f}ms")
+            degraded = True
+        
+        # Check wait time
+        if llm_metrics.avg_wait_time_ms > 10000:  # 10s
+            issues.append(f"Long wait times: {llm_metrics.avg_wait_time_ms:.0f}ms")
+            unhealthy = True
+        elif llm_metrics.avg_wait_time_ms > 5000:  # 5s
+            issues.append(f"Elevated wait times: {llm_metrics.avg_wait_time_ms:.0f}ms")
+            degraded = True
+        
+        # Check cost budget
+        if cost_budget and llm_metrics.cost_per_hour > cost_budget:
+            issues.append(
+                f"Cost exceeded budget: ${llm_metrics.cost_per_hour:.2f}/hr "
+                f"> ${cost_budget:.2f}/hr"
+            )
+            degraded = True  # Cost overrun is degraded, not unhealthy
+        
+        # Check utilization
+        utilization = llm_metrics.get_utilization()
+        if utilization > 0.95:
+            issues.append(f"Very high utilization: {utilization*100:.0f}%")
+            degraded = True
+        
+        # Determine status
+        if unhealthy:
+            status = HealthStatus.UNHEALTHY
+            message = "LLM health check failed: " + "; ".join(issues)
+        elif degraded:
+            status = HealthStatus.DEGRADED
+            message = "LLM performance degraded: " + "; ".join(issues)
+        else:
+            status = HealthStatus.HEALTHY
+            message = f"LLM healthy (TPS: {llm_metrics.tokens_per_second:.0f}, " \
+                     f"P95: {llm_metrics.p95_latency_ms:.0f}ms)"
+        
+        return HealthResult(
+            status=status,
+            message=message,
+            consecutive_failures=0 if status == HealthStatus.HEALTHY else 1,
+            consecutive_successes=1 if status == HealthStatus.HEALTHY else 0
+        )
     
     async def shutdown(self):
         """Shutdown health checker."""

@@ -11,8 +11,8 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
-from pydantic import BaseModel, Field
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from enum import Enum
 import json
 import asyncio
@@ -62,7 +62,7 @@ class Backup(BaseModel):
     
     backup_id: str = Field(..., description="Backup ID")
     agent_id: str = Field(..., description="Agent ID")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Status
     status: BackupStatus = Field(BackupStatus.PENDING, description="Backup status")
@@ -78,11 +78,12 @@ class Backup(BaseModel):
     # Storage
     storage_path: str = Field(..., description="Storage path")
     checksum: Optional[str] = Field(None, description="Backup checksum")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    model_config = ConfigDict()
+
+    @field_serializer('created_at')
+    def serialize_datetime(self, value: datetime) -> str:
+        return value.isoformat() if value else None
 
 
 class BackupManager:
@@ -225,7 +226,7 @@ class BackupManager:
         restored_data = {
             "backup_id": backup_id,
             "agent_id": backup.agent_id,
-            "restored_at": datetime.utcnow().isoformat()
+            "restored_at": datetime.now(timezone.utc).isoformat()
         }
         
         self.logger.info("Restore completed", backup_id=backup_id)
@@ -240,7 +241,7 @@ class BackupManager:
     
     async def cleanup_old_backups(self):
         """Clean up old backups based on retention policy."""
-        cutoff_date = datetime.utcnow() - timedelta(days=self.config.retention_days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.config.retention_days)
         
         deleted_count = 0
         for backup_id, backup in list(self.backups.items()):
@@ -251,7 +252,7 @@ class BackupManager:
                 self.logger.info(
                     "Backup deleted (retention)",
                     backup_id=backup_id,
-                    age_days=(datetime.utcnow() - backup.created_at).days
+                    age_days=(datetime.now(timezone.utc) - backup.created_at).days
                 )
         
         if deleted_count > 0:
@@ -292,7 +293,7 @@ class RecoveryManager:
         import secrets
         
         recovery_point_id = f"rp_{secrets.token_urlsafe(16)}"
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         
         if agent_id not in self.recovery_points:
             self.recovery_points[agent_id] = []
@@ -341,7 +342,7 @@ class RecoveryManager:
         # Simulate recovery
         recovered_state = {
             "agent_id": agent_id,
-            "recovered_at": datetime.utcnow().isoformat(),
+            "recovered_at": datetime.now(timezone.utc).isoformat(),
             "recovery_point": closest_point.isoformat()
         }
         

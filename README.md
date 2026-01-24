@@ -224,46 +224,49 @@ async def intelligent_agent(query: str) -> str:
 - 🎯 25% faster response times
 - 🎯 35% higher success rate
 
-### 🌐 NexusNet: Multi-Agent Collaboration
+### 🛡️ Sentinel: Safety & Compliance
 
-Agents that discover and collaborate with each other.
+Real-time safety and compliance controls for production AI agents.
 
 ```python
 @agent(
-    name="orchestrator",
-    nexusnet={
-        'capabilities': ['research', 'coordination'],
-        'collaborate': True
+    name="customer-support",
+    helix={'min': 2, 'max': 10},
+    cortex={'learning': True},
+    sentinel={
+        'enabled': True,
+        'content_filtering': True,
+        'pii_detection': True,
+        'compliance': ['gdpr', 'hipaa'],
+        'moderation_threshold': 0.8,
+        'action_on_violation': 'block'
     }
 )
-async def orchestrator_agent(topic: str, collaboration) -> dict:
-    """Coordinates multiple specialized agents."""
+async def support_agent(ticket: str) -> str:
+    """Agent with enterprise-grade safety controls."""
+    # Sentinel automatically:
+    # - Filters toxic content
+    # - Detects and redacts PII
+    # - Enforces compliance rules
+    # - Blocks or flags violations
     
-    # Discover available agents
-    data_agents = await collaboration.find_agents('data_collection')
-    
-    # Delegate tasks
-    data = await collaboration.delegate_to(
-        data_agents[0],
-        task={'action': 'collect', 'topic': topic}
-    )
-    
-    # Broadcast results
-    await collaboration.broadcast({
-        'event': 'research_complete',
-        'topic': topic,
-        'data': data
-    })
-    
-    return {'status': 'success', 'data': data}
+    return await handle_ticket(ticket)
 ```
 
 **Features:**
-- ✅ Agent discovery by capability
-- ✅ Task delegation and routing
-- ✅ Message passing and pub/sub
-- ✅ Workflow orchestration
-- ✅ Fault tolerance and retries
+- ✅ Content moderation (toxicity, hate speech, profanity)
+- ✅ PII detection and redaction (email, phone, SSN, credit cards)
+- ✅ Compliance enforcement (GDPR, HIPAA, PCI_DSS, SOC2, CCPA)
+- ✅ Custom policy engine
+- ✅ Configurable actions (block, flag, redact, escalate)
+- ✅ Audit logging and violation tracking
+
+**Compliance Standards:**
+- GDPR: Data minimization, PII protection, right to be forgotten
+- HIPAA: PHI protection, encryption requirements, access control
+- PCI_DSS: Credit card data protection, security requirements
+- SOC2: Security controls, availability, confidentiality
+- CCPA: Consumer privacy rights, data disclosure
 
 ### 🎯 LLM Gateway: Multi-Provider Support
 
@@ -497,10 +500,9 @@ async def data_analyst(dataset_url: str) -> dict:
 # Agent 1: Data Collector
 @agent(
     name="data-collector",
-    nexusnet={'capabilities': ['data_collection']},
     tools=['web_scraper', 'http_request']
 )
-async def data_collector(topic: str, collaboration) -> dict:
+async def data_collector(topic: str) -> dict:
     """Collects data from multiple sources."""
     sources = [
         f"https://api.source1.com/search?q={topic}",
@@ -512,22 +514,15 @@ async def data_collector(topic: str, collaboration) -> dict:
         result = await tools.http_request(url=source)
         data.append(result)
     
-    await collaboration.broadcast({
-        'event': 'data_collected',
-        'topic': topic,
-        'count': len(data)
-    })
-    
     return {'data': data, 'sources': len(sources)}
 
 
 # Agent 2: Analyzer
 @agent(
     name="analyzer",
-    nexusnet={'capabilities': ['analysis']},
     model="gpt-4"
 )
-async def analyzer(data: dict, collaboration) -> dict:
+async def analyzer(data: dict) -> dict:
     """Analyzes collected data."""
     analysis = await llm.chat(
         f"Analyze this data: {data}",
@@ -539,30 +534,16 @@ async def analyzer(data: dict, collaboration) -> dict:
 
 # Agent 3: Orchestrator
 @agent(
-    name="research-orchestrator",
-    nexusnet={'capabilities': ['coordination']},
-    collaborate=True
+    name="research-orchestrator"
 )
-async def orchestrator(research_topic: str, collaboration) -> dict:
+async def orchestrator(research_topic: str) -> dict:
     """Coordinates research across multiple agents."""
     
-    # Find data collectors
-    collectors = await collaboration.find_agents('data_collection')
+    # Collect data
+    data_result = await data_collector(research_topic)
     
-    # Delegate data collection
-    data_result = await collaboration.delegate_to(
-        collectors[0],
-        task={'topic': research_topic}
-    )
-    
-    # Find analyzers
-    analyzers = await collaboration.find_agents('analysis')
-    
-    # Delegate analysis
-    analysis_result = await collaboration.delegate_to(
-        analyzers[0],
-        task={'data': data_result}
-    )
+    # Analyze data
+    analysis_result = await analyzer(data_result)
     
     return {
         'topic': research_topic,
@@ -717,17 +698,23 @@ teleon cortex query <agent-id> --query "customer issues"
 teleon cortex clear <agent-id> --type episodic
 ```
 
-### NexusNet (Collaboration)
+### Sentinel (Safety & Compliance)
 
 ```bash
-# View network status
-teleon nexusnet status
+# View Sentinel status
+teleon sentinel status
 
-# List connected agents
-teleon nexusnet agents
+# List violations for an agent
+teleon sentinel violations <agent-id>
 
-# View agent capabilities
-teleon nexusnet capabilities <agent-id>
+# Test validation on input
+teleon sentinel test <agent-id> --input "test@example.com"
+
+# View Sentinel configuration
+teleon sentinel config <agent-id>
+
+# Export audit log
+teleon sentinel audit <agent-id> --format json
 ```
 
 ### Development
@@ -764,7 +751,6 @@ teleon docs generate
     tools: list[str] = None,      # Available tools
     helix: dict = None,          # Helix configuration
     cortex: dict = None,         # Cortex configuration
-    nexusnet: dict = None,       # NexusNet configuration
     observability: dict = None,  # Observability settings
 )
 ```
@@ -1031,7 +1017,6 @@ Teleon automatically optimizes costs:
 - 116+ built-in tools
 - Helix runtime with auto-scaling
 - Cortex memory system (4 types)
-- NexusNet multi-agent collaboration
 - CLI and development server
 - Testing framework
 - Azure, AWS, GCP integrations

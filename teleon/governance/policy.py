@@ -6,7 +6,7 @@ Define and enforce governance policies
 
 from enum import Enum
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 
@@ -63,7 +63,7 @@ class PolicyManager:
             type=policy_type,
             status=status,
             rules=rules,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         
         self.policies[policy.id] = policy

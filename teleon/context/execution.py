@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -49,14 +49,14 @@ class ExecutionContext:
         """Mark execution as successful."""
         self.success = True
         self.output = result
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self._calculate_duration()
     
     def mark_failure(self, error: Exception) -> None:
         """Mark execution as failed."""
         self.success = False
         self.error = error
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc)
         self._calculate_duration()
     
     def _calculate_duration(self) -> None:

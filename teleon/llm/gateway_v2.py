@@ -17,7 +17,7 @@ Enterprise features:
 """
 
 from typing import Optional, List, Dict, Any, AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import time
 import hashlib
@@ -270,7 +270,7 @@ class CostTracker:
         self.per_request_limit = per_request_limit
         
         self.daily_cost = 0.0
-        self.last_reset = datetime.utcnow().date()
+        self.last_reset = datetime.now(timezone.utc).date()
         self.lock = asyncio.Lock()
         
         self.logger = StructuredLogger("cost_tracker", LogLevel.INFO)
@@ -290,7 +290,7 @@ class CostTracker:
         """
         async with self.lock:
             # Reset daily cost if new day
-            today = datetime.utcnow().date()
+            today = datetime.now(timezone.utc).date()
             if today > self.last_reset:
                 self.daily_cost = 0.0
                 self.last_reset = today

@@ -7,7 +7,7 @@ improve agent performance over time.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 
 from teleon.cortex.memory.episodic import EpisodicMemory, Episode
@@ -29,7 +29,7 @@ class LearningMetrics(BaseModel):
     success_rate_improvement: float = 0.0
     
     # Time tracking
-    learning_started: datetime = Field(default_factory=datetime.utcnow)
+    learning_started: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_learning_cycle: Optional[datetime] = None
 
 
@@ -232,7 +232,7 @@ class LearningEngine:
         results["improvements"] = improvements
         
         # Update metrics
-        self.metrics.last_learning_cycle = datetime.utcnow()
+        self.metrics.last_learning_cycle = datetime.now(timezone.utc)
         if improvements:
             self.metrics.avg_cost_reduction = improvements.get("cost_reduction", 0.0)
             self.metrics.avg_latency_reduction = improvements.get("latency_reduction", 0.0)
@@ -308,8 +308,9 @@ class LearningEngine:
         Returns:
             List of episode groups
         """
-        # Simple grouping by input similarity
-        # In production, use proper clustering or vector similarity
+        # Simple clustering implementation: uses Jaccard similarity on word overlap
+        # This works but is basic - could be enhanced with vector embeddings for
+        # better semantic clustering (e.g., using the embedding function if available)
         
         groups = []
         processed = set()
@@ -370,8 +371,10 @@ class LearningEngine:
             # Look for factual content in output
             output_text = str(episode.output.get("response", ""))
             
-            # Simple heuristics for knowledge extraction
-            # In production, use NLP or LLM to extract facts
+            # Simple heuristic-based knowledge extraction
+            # Uses basic pattern matching (looks for factual indicators like "is", "are", "was")
+            # This works but is basic - could be enhanced with NLP/LLM for more sophisticated
+            # extraction (e.g., named entity recognition, fact extraction models)
             if len(output_text) > 50 and any(
                 indicator in output_text.lower()
                 for indicator in ["is", "are", "was", "means", "refers to"]
@@ -542,7 +545,7 @@ class LearningEngine:
         
         # Calculate learning rate
         if self.metrics.learning_started:
-            duration = (datetime.utcnow() - self.metrics.learning_started).total_seconds()
+            duration = (datetime.now(timezone.utc) - self.metrics.learning_started).total_seconds()
             if duration > 0:
                 summary["learning_rate"] = {
                     "interactions_per_hour": (self.metrics.total_interactions / duration) * 3600,

@@ -10,8 +10,8 @@ Features:
 """
 
 from typing import Dict, Optional, Any, Callable
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from enum import Enum
 import asyncio
 import psutil
@@ -53,17 +53,18 @@ class ProcessInfo(BaseModel):
     memory_limit_mb: Optional[int] = Field(None, description="Memory limit (MB)")
     
     # Timing
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     stopped_at: Optional[datetime] = Field(None)
-    
+
     # Health
     restart_count: int = Field(0, description="Number of restarts")
     last_error: Optional[str] = Field(None, description="Last error message")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+
+    model_config = ConfigDict()
+
+    @field_serializer('started_at', 'stopped_at')
+    def serialize_datetime(self, value: Optional[datetime]) -> Optional[str]:
+        return value.isoformat() if value else None
 
 
 class ProcessManager:
@@ -145,7 +146,9 @@ class ProcessManager:
         try:
             # Mark as running
             process_info.status = ProcessStatus.RUNNING
-            process_info.pid = os.getpid()
+            # Note: For asyncio tasks, we track the task ID instead of PID
+            # PID would only be relevant for actual subprocess spawning
+            process_info.pid = os.getpid()  # Current process PID (for resource monitoring)
             
             self.logger.info(
                 "Process started",
@@ -165,7 +168,7 @@ class ProcessManager:
             
             # Normal completion
             process_info.status = ProcessStatus.STOPPED
-            process_info.stopped_at = datetime.utcnow()
+            process_info.stopped_at = datetime.now(timezone.utc)
             
             self.logger.info(
                 "Process completed",
@@ -176,7 +179,7 @@ class ProcessManager:
         except asyncio.CancelledError:
             # Graceful cancellation
             process_info.status = ProcessStatus.STOPPED
-            process_info.stopped_at = datetime.utcnow()
+            process_info.stopped_at = datetime.now(timezone.utc)
             
             self.logger.info(
                 "Process cancelled",
@@ -187,7 +190,7 @@ class ProcessManager:
         except Exception as e:
             # Process crashed
             process_info.status = ProcessStatus.CRASHED
-            process_info.stopped_at = datetime.utcnow()
+            process_info.stopped_at = datetime.now(timezone.utc)
             process_info.last_error = str(e)
             
             self.logger.error(
@@ -234,7 +237,7 @@ class ProcessManager:
             del self.tasks[process_id]
         
         process_info.status = ProcessStatus.STOPPED
-        process_info.stopped_at = datetime.utcnow()
+        process_info.stopped_at = datetime.now(timezone.utc)
         
         self.logger.info(
             "Process stopped",
@@ -280,7 +283,7 @@ class ProcessManager:
         # Update restart count
         process_info.restart_count += 1
         process_info.status = ProcessStatus.STARTING
-        process_info.started_at = datetime.utcnow()
+        process_info.started_at = datetime.now(timezone.utc)
         process_info.stopped_at = None
         process_info.last_error = None
         

@@ -16,7 +16,7 @@ from functools import wraps
 import time
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import threading
 from collections import defaultdict
@@ -77,7 +77,7 @@ class StructuredLogger:
         """Format log message."""
         if self.format_json:
             log_data = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "level": level,
                 "logger": self.logger.name,
                 "message": message,
@@ -437,7 +437,7 @@ class HealthChecker:
                 healthy = check_func()
                 results[name] = {
                     "status": "healthy" if healthy else "unhealthy",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 if not healthy:
                     overall_healthy = False
@@ -445,7 +445,7 @@ class HealthChecker:
                 results[name] = {
                     "status": "error",
                     "error": str(e),
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 overall_healthy = False
                 self.logger.error(f"Health check failed: {name}", error=str(e))
@@ -453,7 +453,7 @@ class HealthChecker:
         return {
             "status": "healthy" if overall_healthy else "unhealthy",
             "checks": results,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
 

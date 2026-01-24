@@ -9,8 +9,8 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 import json
 import asyncio
 
@@ -19,46 +19,48 @@ from teleon.core import StructuredLogger, LogLevel
 
 class ExecutionStep(BaseModel):
     """Single execution step."""
-    
+
     step_number: int = Field(..., description="Step number")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     step_type: str = Field(..., description="Step type")
-    
+
     # Data
     input_data: Optional[Dict[str, Any]] = Field(None, description="Input data")
     output_data: Optional[Dict[str, Any]] = Field(None, description="Output data")
     state: Optional[Dict[str, Any]] = Field(None, description="State snapshot")
-    
+
     # Metadata
     duration_ms: float = Field(0.0, description="Step duration")
     success: bool = Field(True, description="Step success")
     error: Optional[str] = Field(None, description="Error message")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    model_config = ConfigDict()
+
+    @field_serializer('timestamp')
+    def serialize_datetime(self, value: datetime) -> str:
+        return value.isoformat() if value else None
 
 
 class ExecutionRecording(BaseModel):
     """Complete execution recording."""
-    
+
     execution_id: str = Field(..., description="Execution ID")
     agent_name: str = Field(..., description="Agent name")
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = Field(None)
-    
+
     steps: List[ExecutionStep] = Field(default_factory=list)
-    
+
     # Metadata
     total_duration_ms: float = Field(0.0, description="Total duration")
     success: bool = Field(True, description="Overall success")
     final_result: Optional[Any] = Field(None, description="Final result")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    model_config = ConfigDict()
+
+    @field_serializer('started_at', 'completed_at')
+    def serialize_datetime(self, value: Optional[datetime]) -> Optional[str]:
+        return value.isoformat() if value else None
 
 
 class ExecutionRecorder:
@@ -141,7 +143,7 @@ class ExecutionRecorder:
             success: Overall success
             final_result: Final result
         """
-        self.recording.completed_at = datetime.utcnow()
+        self.recording.completed_at = datetime.now(timezone.utc)
         self.recording.success = success
         self.recording.final_result = final_result
         

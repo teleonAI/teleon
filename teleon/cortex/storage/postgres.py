@@ -8,7 +8,7 @@ Ideal for episodic memory and structured data storage.
 import json
 import fnmatch
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 try:
@@ -291,7 +291,7 @@ class PostgresStorage(StorageBackend):
             expires_at = None
             effective_ttl = ttl or self.config.default_ttl
             if effective_ttl:
-                expires_at = datetime.utcnow() + timedelta(seconds=effective_ttl)
+                expires_at = datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
             
             # Calculate size
             size_bytes = self._calculate_size(value)
@@ -364,7 +364,7 @@ class PostgresStorage(StorageBackend):
                     return default
                 
                 # Check if expired
-                if row['expires_at'] and datetime.utcnow() > row['expires_at']:
+                if row['expires_at'] and datetime.now(timezone.utc) > row['expires_at']:
                     # Delete expired entry
                     await conn.execute(f"""
                         DELETE FROM {self.pg_config.table_name}
@@ -452,7 +452,7 @@ class PostgresStorage(StorageBackend):
                     return False
                 
                 # Check if expired
-                if row['expires_at'] and datetime.utcnow() > row['expires_at']:
+                if row['expires_at'] and datetime.now(timezone.utc) > row['expires_at']:
                     return False
                 
                 return True
@@ -564,7 +564,7 @@ class PostgresStorage(StorageBackend):
                 if row is None or row['expires_at'] is None:
                     return None
                 
-                remaining = (row['expires_at'] - datetime.utcnow()).total_seconds()
+                remaining = (row['expires_at'] - datetime.now(timezone.utc)).total_seconds()
                 return max(0, int(remaining))
                 
         except PostgresError as e:
@@ -589,7 +589,7 @@ class PostgresStorage(StorageBackend):
             raise StorageError("PostgreSQL pool not initialized", operation="set_ttl", key=key)
         
         try:
-            expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
             
             async with self._pool.acquire() as conn:
                 result = await conn.execute(f"""
@@ -671,7 +671,7 @@ class PostgresStorage(StorageBackend):
             effective_ttl = ttl or self.config.default_ttl
             expires_at = None
             if effective_ttl:
-                expires_at = datetime.utcnow() + timedelta(seconds=effective_ttl)
+                expires_at = datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
             
             async with self._pool.acquire() as conn:
                 async with conn.transaction():

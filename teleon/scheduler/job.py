@@ -9,7 +9,7 @@ Defines:
 
 from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import uuid
 
@@ -87,7 +87,7 @@ class Job:
     misfire_grace_time: int = 60
     """Grace time for misfired jobs (seconds)"""
     
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     """Job creation time"""
     
     next_run_time: Optional[datetime] = None

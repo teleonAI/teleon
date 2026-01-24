@@ -10,8 +10,8 @@ Features:
 """
 
 from typing import Dict, Optional, Any, List, Callable
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, ConfigDict
 import asyncio
 import signal
 import sys
@@ -25,6 +25,8 @@ from teleon.core import (
 from teleon.helix.process import ProcessManager, ProcessInfo, ProcessStatus
 from teleon.helix.health import HealthChecker, HealthCheck
 from teleon.helix.scaling import Scaler, ScalingPolicy
+from teleon.helix.llm_metrics import LLMResourceTracker, get_throughput_monitor
+from teleon.helix.cost_tracker import get_token_tracker
 
 
 class ResourceConfig(BaseModel):
@@ -69,8 +71,7 @@ class RuntimeConfig(BaseModel):
     # Logging
     log_level: str = Field("INFO", description="Log level")
     
-    class Config:
-        validate_assignment = True
+    model_config = ConfigDict(validate_assignment=True)
 
 
 class AgentRuntime:
@@ -165,7 +166,7 @@ class AgentRuntime:
             "resources": agent_resources,
             "health_check": health_check,
             "processes": [],
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         
         self.logger.info(
@@ -173,6 +174,61 @@ class AgentRuntime:
             agent_id=agent_id,
             min_instances=agent_resources.min_instances,
             max_instances=agent_resources.max_instances
+        )
+    
+    async def register_llm_agent(
+        self,
+        agent_id: str,
+        agent_callable: Callable,
+        model: str,
+        max_tokens: int = 2000,
+        cost_budget: Optional[float] = None,
+        resources: Optional[ResourceConfig] = None,
+        health_check: Optional[HealthCheck] = None,
+        **kwargs
+    ):
+        """
+        Register LLM agent with specialized configuration.
+        
+        Args:
+            agent_id: Unique agent identifier
+            agent_callable: Agent function/callable
+            model: LLM model name
+            max_tokens: Max tokens per request
+            cost_budget: Optional cost budget (per hour)
+            resources: Resource configuration
+            health_check: Health check configuration
+            **kwargs: Additional configuration
+        """
+        # Register as regular agent first
+        await self.register_agent(
+            agent_id=agent_id,
+            agent_callable=agent_callable,
+            resources=resources,
+            health_check=health_check
+        )
+        
+        # Add LLM-specific tracking
+        llm_tracker = LLMResourceTracker(
+            agent_id=agent_id,
+            model=model,
+            window_size=kwargs.get('metrics_window', 300)
+        )
+        
+        self.agents[agent_id]['llm_tracker'] = llm_tracker
+        self.agents[agent_id]['llm_model'] = model
+        self.agents[agent_id]['llm_max_tokens'] = max_tokens
+        self.agents[agent_id]['llm_cost_budget'] = cost_budget
+        
+        # Register with global throughput monitor
+        await get_throughput_monitor().register_tracker(agent_id, llm_tracker)
+        
+        self.logger.info(
+            "LLM agent registered",
+            agent_id=agent_id,
+            model=model,
+            max_tokens=max_tokens,
+            cost_budget=cost_budget
         )
     
     async def start_agent(self, agent_id: str) -> List[str]:

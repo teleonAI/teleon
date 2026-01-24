@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 
@@ -15,7 +15,7 @@ class PromptTemplate(BaseModel):
     variables: List[str] = Field(default_factory=list, description="Required variables")
     version: str = Field("1.0.0", description="Template version")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation time")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Creation time")
     
     def render(self, **kwargs) -> str:
         """
@@ -209,7 +209,7 @@ class PromptManager:
             "traffic_split": traffic_split,
             "results_a": 0,
             "results_b": 0,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
     
     def get_ab_variant(

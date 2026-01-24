@@ -1,7 +1,7 @@
 """Episodic memory - stores and retrieves events/episodes."""
 
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 import json
 
@@ -10,7 +10,7 @@ class Episode(BaseModel):
     """A single episode/event."""
     
     id: str = Field(..., description="Episode ID")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When it happened")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When it happened")
     event_type: str = Field(..., description="Type of event")
     content: str = Field(..., description="Event content/description")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
@@ -281,7 +281,7 @@ class EpisodicMemory:
             Analysis results
         """
         # Get episodes in time window
-        cutoff = datetime.utcnow() - timedelta(days=time_window_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=time_window_days)
         episodes = [e for e in self.episodes if e.timestamp >= cutoff]
         
         if event_type:
@@ -340,7 +340,7 @@ class EpisodicMemory:
         
         # Remove old episodes if retention policy set
         if self.retention_days:
-            cutoff = datetime.utcnow() - timedelta(days=self.retention_days)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
             self.episodes = [e for e in self.episodes if e.timestamp >= cutoff]
         
         # Rebuild indices

@@ -5,7 +5,7 @@ Combines metrics, dashboards, and reporting.
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from collections import defaultdict
 from enum import Enum
@@ -38,7 +38,7 @@ class MetricsAggregator:
     def record(self, metric_name: str, value: float, labels: Optional[Dict[str, str]] = None):
         """Record a metric data point."""
         data_point = TimeSeriesData(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             value=value,
             labels=labels or {}
         )
@@ -147,7 +147,7 @@ class Dashboard:
 class Report(BaseModel):
     """Generated report."""
     title: str
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     sections: List[Dict[str, Any]] = Field(default_factory=list)
 
 

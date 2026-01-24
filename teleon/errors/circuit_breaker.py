@@ -4,7 +4,7 @@ import asyncio
 from enum import Enum
 from typing import Callable, TypeVar, Optional
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 T = TypeVar('T')
 
@@ -115,7 +115,7 @@ class CircuitBreaker:
         """Handle failed execution."""
         async with self._lock:
             self.failure_count += 1
-            self.last_failure_time = datetime.utcnow()
+            self.last_failure_time = datetime.now(timezone.utc)
             
             if self.state == CircuitState.HALF_OPEN:
                 print(f"Circuit '{self.name}' transitioning to OPEN (failed in half-open)")
@@ -130,7 +130,7 @@ class CircuitBreaker:
         if self.last_failure_time is None:
             return True
         
-        elapsed = datetime.utcnow() - self.last_failure_time
+        elapsed = datetime.now(timezone.utc) - self.last_failure_time
         return elapsed.total_seconds() >= self.config.timeout
     
     async def reset(self) -> None:

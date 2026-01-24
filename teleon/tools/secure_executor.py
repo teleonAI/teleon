@@ -13,7 +13,7 @@ Enterprise security features:
 """
 
 from typing import Optional, Dict, Any, List, Set
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import resource
 import psutil
@@ -364,7 +364,7 @@ class AuditLogger:
             duration: Execution duration
         """
         audit_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_id": user_id,
             "tool_name": tool_name,
             "parameters": self._sanitize_parameters(parameters),

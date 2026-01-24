@@ -17,8 +17,9 @@ import secrets
 import time
 import uuid
 import logging
+import logging
 from collections import deque, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
@@ -35,7 +36,15 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
 
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
 from teleon.discovery import discover_agents
+
+logger = logging.getLogger("teleon.dev_server")
 
 logger = logging.getLogger("teleon.dev_server")
 
@@ -123,8 +132,10 @@ def create_dev_server(
         "total_tokens": 0,
         "total_cost": 0.0,
         "total_bandwidth_bytes": 0,  # Track total bytes sent
+        "total_bandwidth_bytes": 0,  # Track total bytes sent
         "requests_by_minute": defaultdict(int),  # {minute_timestamp: count}
         "latency_by_minute": defaultdict(list),   # {minute_timestamp: [latencies]}
+        "bandwidth_by_minute": defaultdict(int),  # {minute_timestamp: bytes}
         "bandwidth_by_minute": defaultdict(int),  # {minute_timestamp: bytes}
         "requests_by_agent": defaultdict(int),
         "tokens_by_agent": defaultdict(int),
@@ -133,7 +144,7 @@ def create_dev_server(
     
     # Hot reload state
     reload_state = {
-        "last_reload": datetime.utcnow(),
+        "last_reload": datetime.now(timezone.utc),
         "reload_count": 0,
         "changed_files": [],
         "file_watcher_active": False,
@@ -169,7 +180,7 @@ def create_dev_server(
             # Capture request
             request_id = str(uuid.uuid4())
             start_time = time.time()
-            request_timestamp = datetime.utcnow()
+            request_timestamp = datetime.now(timezone.utc)
             
             # Try to read request body (for POST requests)
             request_body = None
@@ -230,6 +241,17 @@ def create_dev_server(
                 
                 # Update performance metrics
                 performance_metrics["total_requests"] += 1
+                
+                # Track bandwidth from response headers
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        bytes_sent = int(content_length)
+                        performance_metrics["total_bandwidth_bytes"] += bytes_sent
+                        minute_key_bw = request_timestamp.replace(second=0, microsecond=0).isoformat()
+                        performance_metrics["bandwidth_by_minute"][minute_key_bw] += bytes_sent
+                    except (ValueError, TypeError):
+                        pass
                 
                 # Track bandwidth from response headers
                 content_length = response.headers.get("content-length")
@@ -508,7 +530,7 @@ curl -X POST http://localhost:8000/invoke \\
         """Health check endpoint."""
         return {
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "agents_count": len(discovered_agents),
             "api_keys_active": len(api_keys),
             "environment": os.getenv("TELEON_ENV", "development"),
@@ -668,7 +690,7 @@ curl -X POST http://localhost:8000/invoke \\
     async def _invoke_agent(agent_id: str, agent_info: dict, input_text: str, temperature: float, max_tokens: int):
         """Internal function to invoke an agent."""
         try:
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             agent_func = agent_info["function"]
 
             # Call the agent function
@@ -677,7 +699,7 @@ curl -X POST http://localhost:8000/invoke \\
             else:
                 output = agent_func(input_text)
 
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             latency_ms = (end_time - start_time).total_seconds() * 1000
 
             return AgentResponse(
@@ -816,7 +838,7 @@ curl -X POST http://localhost:8000/invoke \\
         api_keys[api_key] = {
             "name": request.name,
             "description": request.description or "Dev-only test API key",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "environment": "development_only"
         }
         return APIKeyResponse(
@@ -1182,7 +1204,7 @@ curl -X POST http://localhost:8000/invoke \\
         avg_latency = sum(all_latencies) / len(all_latencies) if all_latencies else 0
         
         # Get last 60 minutes of data
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last_60_minutes = []
         for i in range(60, 0, -1):
             minute = (now - timedelta(minutes=i)).replace(second=0, microsecond=0)
@@ -1197,11 +1219,16 @@ curl -X POST http://localhost:8000/invoke \\
         # Convert bandwidth to GB for readability
         bandwidth_gb = performance_metrics["total_bandwidth_bytes"] / (1024 * 1024 * 1024)
         
+        # Convert bandwidth to GB for readability
+        bandwidth_gb = performance_metrics["total_bandwidth_bytes"] / (1024 * 1024 * 1024)
+        
         return {
             "total_requests": performance_metrics["total_requests"],
             "avg_latency_ms": round(avg_latency, 2),
             "total_tokens": performance_metrics["total_tokens"],
             "total_cost": round(performance_metrics["total_cost"], 4),
+            "total_bandwidth_bytes": performance_metrics["total_bandwidth_bytes"],
+            "total_bandwidth_gb": round(bandwidth_gb, 4),
             "total_bandwidth_bytes": performance_metrics["total_bandwidth_bytes"],
             "total_bandwidth_gb": round(bandwidth_gb, 4),
             "requests_per_minute": last_60_minutes,
@@ -1425,7 +1452,7 @@ curl -X POST http://localhost:8000/invoke \\
             discovered_agents.update(new_agents)
             
             # Update reload state
-            reload_state["last_reload"] = datetime.utcnow()
+            reload_state["last_reload"] = datetime.now(timezone.utc)
             reload_state["reload_count"] += 1
             reload_state["changed_files"] = []
             
@@ -1440,7 +1467,7 @@ curl -X POST http://localhost:8000/invoke \\
             return {
                 "success": False,
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
     @app.get("/api/reload")
@@ -1451,7 +1478,7 @@ curl -X POST http://localhost:8000/invoke \\
     @app.get("/api/reload/status")
     async def reload_status():
         """Get hot reload status."""
-        seconds_since_reload = (datetime.utcnow() - reload_state["last_reload"]).total_seconds()
+        seconds_since_reload = (datetime.now(timezone.utc) - reload_state["last_reload"]).total_seconds()
         return {
             "last_reload": reload_state["last_reload"].isoformat(),
             "seconds_ago": round(seconds_since_reload),
@@ -1575,8 +1602,8 @@ curl -X POST http://localhost:8000/invoke \\
                         "error_count": error_count,
                         "avg_latency_ms": round(avg_latency, 2),
                         "bandwidth_bytes": new_bandwidth,
-                        "period_start": (datetime.utcnow() - timedelta(seconds=report_interval)).isoformat(),
-                        "period_end": datetime.utcnow().isoformat(),
+                        "period_start": (datetime.now(timezone.utc) - timedelta(seconds=report_interval)).isoformat(),
+                        "period_end": datetime.now(timezone.utc).isoformat(),
                     }
                 }
                 

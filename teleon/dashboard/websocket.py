@@ -9,7 +9,7 @@ Provides real-time updates for:
 """
 
 from typing import Dict, Set, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import json
 
@@ -70,7 +70,7 @@ class ConnectionManager:
         """Broadcast agent status update."""
         message = {
             "type": "agent_update",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": {
                 "agent_id": agent_id,
                 "status": status,
@@ -83,7 +83,7 @@ class ConnectionManager:
         """Broadcast metric update."""
         message = {
             "type": "metric_update",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": {
                 "metric": metric_name,
                 "value": value
@@ -95,7 +95,7 @@ class ConnectionManager:
         """Broadcast system notification."""
         notification = {
             "type": "notification",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": {
                 "level": level,  # info, warning, error
                 "title": title,
@@ -108,7 +108,7 @@ class ConnectionManager:
         """Broadcast agent log entry."""
         message = {
             "type": "log",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data": {
                 "agent_id": agent_id,
                 **log_entry
@@ -133,7 +133,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # Send initial connection message
         await manager.send_personal_message({
             "type": "connected",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "message": "Connected to Teleon Dashboard"
         }, websocket)
         
@@ -149,7 +149,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if message_type == "ping":
                     await manager.send_personal_message({
                         "type": "pong",
-                        "timestamp": datetime.utcnow().isoformat()
+                        "timestamp": datetime.now(timezone.utc).isoformat()
                     }, websocket)
                 
                 elif message_type == "subscribe":

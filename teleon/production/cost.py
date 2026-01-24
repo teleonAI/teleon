@@ -10,7 +10,7 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from enum import Enum
 from collections import defaultdict
@@ -75,7 +75,7 @@ class CostTracker:
             metadata: Additional metadata
         """
         cost_entry = {
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "category": category.value,
             "amount": amount,
             "metadata": metadata or {}
@@ -84,8 +84,8 @@ class CostTracker:
         self.costs[agent_id].append(cost_entry)
         
         # Update totals
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        month = datetime.utcnow().strftime("%Y-%m")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
         
         self.daily_totals[today] = self.daily_totals.get(today, 0) + amount
         self.monthly_totals[month] = self.monthly_totals.get(month, 0) + amount
@@ -147,7 +147,7 @@ class CostTracker:
             Daily cost ($)
         """
         if date is None:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+            date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         return self.daily_totals.get(date, 0.0)
     
@@ -162,7 +162,7 @@ class CostTracker:
             Monthly cost ($)
         """
         if month is None:
-            month = datetime.utcnow().strftime("%Y-%m")
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
         
         return self.monthly_totals.get(month, 0.0)
 
@@ -238,7 +238,7 @@ class CostOptimizer:
             "current_costs": costs,
             "recommendations": recommendations,
             "potential_savings": total_potential_savings,
-            "analyzed_at": datetime.utcnow().isoformat()
+            "analyzed_at": datetime.now(timezone.utc).isoformat()
         }
     
     def suggest_model_alternatives(
@@ -401,7 +401,7 @@ class BudgetManager:
         current_cost = self.cost_tracker.get_monthly_cost()
         
         # Calculate days elapsed and remaining
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         days_in_month = 30  # Simplified
         days_elapsed = now.day
         days_remaining = days_in_month - days_elapsed

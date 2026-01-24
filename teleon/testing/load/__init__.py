@@ -10,8 +10,8 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional, Callable
-from datetime import datetime, timedelta
-from pydantic import BaseModel, Field
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 import asyncio
 import time
 from statistics import mean, median, stdev
@@ -57,11 +57,8 @@ class LoadTestResult(BaseModel):
     
     # Errors
     errors: List[str] = Field(default_factory=list, description="Error messages")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    model_config = ConfigDict()
 
 
 class LoadTester:

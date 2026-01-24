@@ -9,7 +9,7 @@ Provides:
 
 from typing import Optional
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from croniter import croniter
 
 
@@ -80,7 +80,7 @@ class CronTrigger(Trigger):
     ) -> Optional[datetime]:
         """Calculate next fire time based on cron expression."""
         if now is None:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
         
         base_time = previous_fire_time or now
         
@@ -153,7 +153,7 @@ class IntervalTrigger(Trigger):
     ) -> Optional[datetime]:
         """Calculate next fire time based on interval."""
         if now is None:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
         
         # Check if we're past end date
         if self.end_date and now > self.end_date:
@@ -207,7 +207,7 @@ class DateTrigger(Trigger):
     ) -> Optional[datetime]:
         """Calculate next fire time (one-time execution)."""
         if now is None:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
         
         # Already executed or run date in the past
         if self._executed or previous_fire_time is not None:

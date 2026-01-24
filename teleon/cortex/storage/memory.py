@@ -10,7 +10,7 @@ import fnmatch
 import json
 import sys
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import OrderedDict
 from pydantic import BaseModel
 
@@ -41,7 +41,7 @@ class StoredItem:
         """
         self.value = value
         self.metadata = metadata or {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self.expires_at = (
             self.created_at + timedelta(seconds=ttl) if ttl else None
         )
@@ -68,13 +68,13 @@ class StoredItem:
         """Check if item has expired."""
         if not self.expires_at:
             return False
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
     
     def get_remaining_ttl(self) -> Optional[int]:
         """Get remaining TTL in seconds."""
         if not self.expires_at:
             return None
-        remaining = (self.expires_at - datetime.utcnow()).total_seconds()
+        remaining = (self.expires_at - datetime.now(timezone.utc)).total_seconds()
         return max(0, int(remaining))
 
 
@@ -388,7 +388,7 @@ class InMemoryStorage(StorageBackend):
                 del self._store[key]
                 return False
             
-            item.expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+            item.expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
             return True
     
     async def get_many(self, keys: List[str]) -> Dict[str, Any]:

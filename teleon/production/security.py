@@ -10,7 +10,7 @@ Features:
 """
 
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from enum import Enum
 import hashlib
@@ -125,8 +125,8 @@ class AuthManager:
         self.api_keys[api_key] = {
             "user_id": user_id,
             "scopes": scopes,
-            "created_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow() + timedelta(days=expires_in_days),
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=expires_in_days),
             "active": True
         }
         
@@ -156,7 +156,7 @@ class AuthManager:
         if not key_data["active"]:
             return None
         
-        if datetime.utcnow() > key_data["expires_at"]:
+        if datetime.now(timezone.utc) > key_data["expires_at"]:
             key_data["active"] = False
             return None
         
@@ -182,8 +182,8 @@ class AuthManager:
         payload = {
             "user_id": user_id,
             "scopes": scopes,
-            "iat": datetime.utcnow().isoformat(),
-            "exp": (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+            "iat": datetime.now(timezone.utc).isoformat(),
+            "exp": (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
         }
         
         if HAS_JWT:
@@ -221,7 +221,7 @@ class AuthManager:
                 
                 # Check expiration
                 exp_time = datetime.fromisoformat(payload["exp"])
-                if datetime.utcnow() > exp_time:
+                if datetime.now(timezone.utc) > exp_time:
                     self.logger.warning("JWT expired")
                     return None
             
@@ -249,8 +249,8 @@ class AuthManager:
         
         self.sessions[session_id] = {
             "user_id": user_id,
-            "created_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow() + timedelta(seconds=self.config.session_timeout),
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=self.config.session_timeout),
             "metadata": metadata or {},
             "active": True
         }
@@ -277,7 +277,7 @@ class AuthManager:
         if not session["active"]:
             return None
         
-        if datetime.utcnow() > session["expires_at"]:
+        if datetime.now(timezone.utc) > session["expires_at"]:
             session["active"] = False
             return None
         
@@ -487,7 +487,7 @@ class AuditLogger:
             metadata: Additional metadata
         """
         event = {
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "event_type": event_type,
             "user_id": user_id,
             "resource": resource,

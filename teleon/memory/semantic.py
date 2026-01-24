@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 
 
@@ -14,7 +14,7 @@ class KnowledgeItem(BaseModel):
     embedding: Optional[List[float]] = Field(None, description="Vector embedding")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata")
     tags: List[str] = Field(default_factory=list, description="Tags")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Creation time")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Creation time")
     source: Optional[str] = Field(None, description="Source of knowledge")
     confidence: float = Field(1.0, description="Confidence score (0-1)")
 

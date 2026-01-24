@@ -2,7 +2,7 @@
 
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from enum import Enum
 
@@ -78,7 +78,7 @@ class StructuredLogger:
             **kwargs: Additional fields
         """
         log_data = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level.value,
             "logger": self.name,
             "message": message,

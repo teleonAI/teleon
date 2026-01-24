@@ -13,7 +13,7 @@ Enterprise features:
 """
 
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import json
 import hashlib
@@ -290,7 +290,7 @@ class InMemoryBackend(PersistentBackend):
         async with self.lock:
             # Check expiry
             if key in self.expiry:
-                if datetime.utcnow() > self.expiry[key]:
+                if datetime.now(timezone.utc) > self.expiry[key]:
                     del self.storage[key]
                     del self.expiry[key]
                     return None
@@ -308,7 +308,7 @@ class InMemoryBackend(PersistentBackend):
             self.storage[key] = value
             
             if ttl:
-                self.expiry[key] = datetime.utcnow() + timedelta(seconds=ttl)
+                self.expiry[key] = datetime.now(timezone.utc) + timedelta(seconds=ttl)
             elif key in self.expiry:
                 del self.expiry[key]
     

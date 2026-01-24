@@ -11,8 +11,8 @@ Features:
 """
 
 from typing import Optional, Dict, Any, List, Type, TypeVar, Generic
-from pydantic import BaseModel, Field, validator, root_validator
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 import os
 import yaml
@@ -35,11 +35,7 @@ class SecretsConfig(BaseModel):
     redis_url: Optional[str] = Field(None, description="Redis connection URL")
     smtp_password: Optional[str] = Field(None, description="SMTP password")
     
-    class Config:
-        # Secrets should never be logged
-        json_encoders = {
-            str: lambda v: "***" if v else None
-        }
+    model_config = ConfigDict()
     
     @classmethod
     def from_env(cls) -> "SecretsConfig":
@@ -74,7 +70,8 @@ class LLMConfig(BaseModel):
     max_cost_per_request: Optional[float] = Field(None, gt=0, description="Max cost per request")
     daily_budget: Optional[float] = Field(None, gt=0, description="Daily budget limit")
     
-    @validator("default_provider")
+    @field_validator("default_provider")
+    @classmethod
     def validate_provider(cls, v):
         allowed = ["openai", "anthropic", "google", "cohere"]
         if v not in allowed:
@@ -143,7 +140,8 @@ class ObservabilityConfig(BaseModel):
     healthcheck_enabled: bool = Field(True, description="Enable health checks")
     healthcheck_interval: int = Field(30, ge=5, description="Health check interval (seconds)")
     
-    @validator("log_level")
+    @field_validator("log_level")
+    @classmethod
     def validate_log_level(cls, v):
         allowed = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in allowed:
@@ -177,13 +175,15 @@ class TeleonConfig(BaseSettings):
     
     # Secrets (loaded separately for security)
     _secrets: Optional[SecretsConfig] = None
-    
-    class Config:
-        env_prefix = "TELEON_"
-        env_nested_delimiter = "__"
-        case_sensitive = False
-        
-    @root_validator(pre=True)
+
+    model_config = SettingsConfigDict(
+        env_prefix="TELEON_",
+        env_nested_delimiter="__",
+        case_sensitive=False
+    )
+
+    @model_validator(mode='before')
+    @classmethod
     def validate_environment(cls, values):
         """Validate environment configuration."""
         env = values.get("environment", "development")

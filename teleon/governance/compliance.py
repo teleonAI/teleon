@@ -6,7 +6,7 @@ Track compliance with regulatory frameworks (GDPR, SOC2, HIPAA, etc.)
 
 from enum import Enum
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 
@@ -51,7 +51,7 @@ class ComplianceManager:
         status = ComplianceStatus(
             framework=framework,
             status="in_review",
-            last_checked=datetime.utcnow(),
+            last_checked=datetime.now(timezone.utc),
             violations=0,
         )
         
@@ -69,7 +69,7 @@ class ComplianceManager:
         
         # Perform compliance checks (implement specific logic per framework)
         status = self.frameworks[framework]
-        status.last_checked = datetime.utcnow()
+        status.last_checked = datetime.now(timezone.utc)
         
         # Example checks (should be customized per framework)
         violations = self._run_compliance_checks(framework)

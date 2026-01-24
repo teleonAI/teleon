@@ -12,7 +12,7 @@ Features:
 from typing import Any, Dict, Optional, Callable, List
 import asyncio
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 
 from teleon.core import StructuredLogger, LogLevel
@@ -76,7 +76,7 @@ class AgentTestCase(unittest.TestCase):
         Returns:
             Agent execution result
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Execute agent
@@ -92,8 +92,8 @@ class AgentTestCase(unittest.TestCase):
                 "args": args,
                 "kwargs": kwargs,
                 "start_time": start_time,
-                "end_time": datetime.utcnow(),
-                "duration": (datetime.utcnow() - start_time).total_seconds()
+                "end_time": datetime.now(timezone.utc),
+                "duration": (datetime.now(timezone.utc) - start_time).total_seconds()
             }
             self.executions.append(execution)
             
@@ -108,8 +108,8 @@ class AgentTestCase(unittest.TestCase):
                 "args": args,
                 "kwargs": kwargs,
                 "start_time": start_time,
-                "end_time": datetime.utcnow(),
-                "duration": (datetime.utcnow() - start_time).total_seconds()
+                "end_time": datetime.now(timezone.utc),
+                "duration": (datetime.now(timezone.utc) - start_time).total_seconds()
             }
             self.executions.append(execution)
             raise
@@ -184,7 +184,7 @@ class ToolTestCase(unittest.TestCase):
         Returns:
             Tool execution result
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Execute tool
@@ -200,8 +200,8 @@ class ToolTestCase(unittest.TestCase):
                 "args": args,
                 "kwargs": kwargs,
                 "start_time": start_time,
-                "end_time": datetime.utcnow(),
-                "duration": (datetime.utcnow() - start_time).total_seconds(),
+                "end_time": datetime.now(timezone.utc),
+                "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
                 "tool_name": getattr(tool, "name", "unknown")
             }
             self.executions.append(execution)
@@ -217,8 +217,8 @@ class ToolTestCase(unittest.TestCase):
                 "args": args,
                 "kwargs": kwargs,
                 "start_time": start_time,
-                "end_time": datetime.utcnow(),
-                "duration": (datetime.utcnow() - start_time).total_seconds(),
+                "end_time": datetime.now(timezone.utc),
+                "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
                 "tool_name": getattr(tool, "name", "unknown")
             }
             self.executions.append(execution)
@@ -251,7 +251,7 @@ class IntegrationTestCase(unittest.TestCase):
         super().setUp()
         
         # Track test metadata
-        self.test_start = datetime.utcnow()
+        self.test_start = datetime.now(timezone.utc)
         self.logger = StructuredLogger("integration_test", LogLevel.DEBUG)
     
     def tearDown(self):
@@ -259,7 +259,7 @@ class IntegrationTestCase(unittest.TestCase):
         super().tearDown()
         
         # Log test duration
-        duration = (datetime.utcnow() - self.test_start).total_seconds()
+        duration = (datetime.now(timezone.utc) - self.test_start).total_seconds()
         self.logger.info(f"Integration test completed in {duration}s")
 
 
@@ -323,14 +323,14 @@ def test_tool(
         @wraps(func)
         async def wrapper(*args, **kwargs):
             test_name = name or func.__name__
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             
             try:
                 result = await func(*args, **kwargs)
                 
                 # Check duration
                 if max_duration:
-                    duration = (datetime.utcnow() - start_time).total_seconds()
+                    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                     if duration > max_duration:
                         raise AssertionError(
                             f"Tool test '{test_name}' took {duration}s, "

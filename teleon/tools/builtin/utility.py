@@ -105,7 +105,7 @@ class GetTimestampTool(BaseTool):
         format_type = kwargs.get("format", "iso")
         
         try:
-            now = datetime.datetime.utcnow()
+            now = datetime.datetime.now(timezone.utc)
             
             if format_type == "iso":
                 timestamp = now.isoformat()

@@ -5,7 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.table import Table
@@ -34,7 +34,7 @@ class AgentDeployment:
         self.status = status
         self.url = url
         self.replicas = replicas
-        self.deployed_at = deployed_at or datetime.utcnow()
+        self.deployed_at = deployed_at or datetime.now(timezone.utc)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

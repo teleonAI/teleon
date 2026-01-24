@@ -10,7 +10,7 @@ Provides:
 
 from typing import Dict, Optional, Callable, Any, List
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from teleon.scheduler.job import Job, JobExecution, JobStatus
@@ -139,7 +139,7 @@ class Scheduler:
             job: Job to execute
         """
         execution_id = str(uuid.uuid4())
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         
         execution = JobExecution(
             execution_id=execution_id,
@@ -163,7 +163,7 @@ class Scheduler:
             # Job completed successfully
             execution.status = JobStatus.COMPLETED
             execution.result = result
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = datetime.now(timezone.utc)
             execution.duration = (execution.completed_at - started_at).total_seconds()
             
             self.logger.info(
@@ -179,7 +179,7 @@ class Scheduler:
             # Job failed
             execution.status = JobStatus.FAILED
             execution.error = str(e)
-            execution.completed_at = datetime.utcnow()
+            execution.completed_at = datetime.now(timezone.utc)
             execution.duration = (execution.completed_at - started_at).total_seconds()
             
             self.logger.error(
@@ -206,7 +206,7 @@ class Scheduler:
         """Main scheduler loop."""
         while self.running:
             try:
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 
                 # Find jobs that should run
                 for job in list(self.jobs.values()):

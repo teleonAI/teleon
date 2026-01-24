@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, Optional, List, Literal
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class LLMMessage(BaseModel):
@@ -37,7 +37,7 @@ class LLMResponse(BaseModel):
     latency_ms: Optional[float] = Field(None, description="Response latency in milliseconds")
     cost: Optional[float] = Field(None, description="Estimated cost of the request in USD")
     cached: bool = Field(False, description="Whether this response came from cache")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Response timestamp")
     
     # Raw response (for debugging)
     raw_response: Optional[Dict[str, Any]] = Field(None, description="Raw provider response")
