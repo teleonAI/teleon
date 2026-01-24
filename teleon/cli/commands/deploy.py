@@ -413,7 +413,8 @@ def detect_agents():
             if "@client.agent" in content or "@agent" in content:
                 # Extract agent names (simplified)
                 import re
-                matches = re.findall(r'@client\.agent\([^)]*name=["\']([^"\']+)["\']', content)
+                # Handle multi-line decorators with DOTALL flag
+                matches = re.findall(r'@client\.agent\([^)]*name=["\']([^"\']+)["\']', content, re.DOTALL)
                 for name in matches:
                     # Better detection of feature usage
                     uses_cortex = (
@@ -1531,9 +1532,13 @@ def show_deployment_plan(agents, database_config, env):
                 memory_types.append("Semantic")
             memory_types.append("Episodic")
             memory_types.append("Procedural")
+            features.append("Cortex")
         
         if agent.get("uses_helix"):
             features.append("Auto-scale")
+        
+        if agent.get("uses_sentinel"):
+            features.append("Sentinel")
         
         table.add_row(
             agent["name"],
