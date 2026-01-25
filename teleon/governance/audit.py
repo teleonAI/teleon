@@ -189,13 +189,14 @@ class AuditLogger:
         if self.storage_backend:
             self._store_log(log)
 
-        # Queue for remote submission
+        # Queue for remote submission (NON-BLOCKING)
+        # CRITICAL: This must never block agent execution
         if self.enable_remote_logging:
             with self._pending_lock:
                 self._pending_logs.append(log)
-                # Trigger flush if batch is full
+                # Trigger flush if batch is full (fire-and-forget, non-blocking)
                 if len(self._pending_logs) >= self.batch_size:
-                    self._try_flush_async()
+                    self._try_flush_async()  # Schedules flush but returns immediately
 
         return log
 
@@ -372,12 +373,20 @@ class AuditLogger:
                 print(f"Warning: Error in periodic flush: {e}")
 
     def _try_flush_async(self):
-        """Try to trigger an async flush"""
+        """
+        Try to trigger an async flush (NON-BLOCKING).
+        
+        CRITICAL: This method must never block agent execution.
+        It schedules a flush task but returns immediately.
+        """
         try:
             loop = asyncio.get_running_loop()
+            # Fire-and-forget - create_task() schedules but doesn't block
+            # _flush_to_remote() runs in background, zero latency impact
             loop.create_task(self._flush_to_remote())
         except RuntimeError:
             # No running event loop - will flush on periodic task or close()
+            # This is fine - background flush will handle it
             pass
 
     async def _flush_to_remote(self):
@@ -419,7 +428,7 @@ class AuditLogger:
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    timeout=30.0,
+                    timeout=5.0,  # Reduced timeout to prevent blocking agent calls
                 )
                 response.raise_for_status()
 
