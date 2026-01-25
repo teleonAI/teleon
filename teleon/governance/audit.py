@@ -124,6 +124,15 @@ class AuditLogger:
         self.storage_backend = storage_backend
         self.enable_pii_detection = enable_pii_detection
         self.logs: List[AuditLog] = []
+        
+        # Initialize logger for error reporting
+        try:
+            from teleon.core import StructuredLogger, LogLevel
+            self.logger = StructuredLogger("audit_logger", LogLevel.INFO)
+        except ImportError:
+            # Fallback to standard logging if StructuredLogger not available
+            import logging
+            self.logger = logging.getLogger("teleon.audit_logger")
 
         # Remote logging configuration (from env vars or params)
         self.api_url = api_url or os.environ.get("TELEON_API_URL")
@@ -422,8 +431,16 @@ class AuditLogger:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                # Log error but continue
-                print(f"Warning: Error in periodic flush: {e}")
+                # Log error but continue (use logger if available, otherwise print)
+                try:
+                    self.logger.warning(
+                        f"Error in periodic flush: {e}",
+                        exc_info=True,
+                        extra={"error_type": type(e).__name__}
+                    )
+                except (AttributeError, Exception):
+                    # Fallback if logger not available or logger call fails
+                    print(f"Warning: Error in periodic flush: {e}")
 
     def _try_flush_async(self):
         """
