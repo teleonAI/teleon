@@ -404,17 +404,44 @@ def detect_agents():
     
     # Look for agents.py or files with @client.agent
     agents_found = []
+    processed_files = set()  # Track processed files to avoid duplicates
     
-    # Check common locations
-    for pattern in ["agents.py", "*/agents.py", "src/agents.py"]:
+    # Check common locations - use recursive glob to find all agents.py files
+    for pattern in ["agents.py", "**/agents.py", "*/agents.py", "src/agents.py"]:
         for file in Path(".").glob(pattern):
+            # Skip test files and __pycache__
+            if "test" in str(file).lower() or "__pycache__" in str(file):
+                continue
+            
+            # Skip if we've already processed this file (avoid duplicates from multiple patterns)
+            file_key = str(file.resolve())
+            if file_key in processed_files:
+                continue
+            processed_files.add(file_key)
+                
             # Parse file to find agents (simplified)
-            content = file.read_text()
+            try:
+                content = file.read_text()
+            except Exception:
+                continue
+                
             if "@client.agent" in content or "@agent" in content:
-                # Extract agent names (simplified)
+                # Extract agent names - improved regex to handle multiline decorators
                 import re
-                # Handle multi-line decorators with DOTALL flag
-                matches = re.findall(r'@client\.agent\([^)]*name=["\']([^"\']+)["\']', content, re.DOTALL)
+                # Match @client.agent( ... name="..." ... ) 
+                # Use a simpler approach: find the decorator start, then find name= within it
+                # This handles multiline decorators better
+                decorator_pattern = r'@client\.agent\s*\([^)]*?name\s*=\s*["\']([^"\']+)["\']'
+                matches = re.findall(decorator_pattern, content, re.DOTALL)
+                
+                # If that doesn't work, try a more permissive pattern that handles nested parentheses
+                if not matches:
+                    # Find all @client.agent decorators, then extract name from each
+                    decorator_blocks = re.findall(r'@client\.agent\s*\((.*?)\)', content, re.DOTALL)
+                    for block in decorator_blocks:
+                        name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', block)
+                        if name_match:
+                            matches.append(name_match.group(1))
                 for name in matches:
                     # Better detection of feature usage
                     uses_cortex = (
