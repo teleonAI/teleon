@@ -128,6 +128,11 @@ class AuditLogger:
         # Remote logging configuration (from env vars or params)
         self.api_url = api_url or os.environ.get("TELEON_API_URL")
         self.api_key = api_key or os.environ.get("TELEON_API_KEY")
+        
+        # Detect if this is an agent context (service account token vs user JWT)
+        # Service account tokens are JWTs that don't look like user tokens
+        # We'll use the agent endpoint if the key looks like a service account token
+        self._is_agent_context = self._detect_agent_context()
 
         # Only enable remote logging if we have the required credentials and httpx
         self.enable_remote_logging = (
@@ -151,6 +156,54 @@ class AuditLogger:
         # Start background flush task if remote logging is enabled
         if self.enable_remote_logging:
             self._try_start_flush_task()
+    
+    def _detect_agent_context(self) -> bool:
+        """
+        Detect if this AuditLogger is running in an agent context.
+        
+        Agents use service account tokens (JWT) for auth and are deployed
+        with specific environment variables. User contexts use user JWT tokens.
+        
+        Returns:
+            True if agent context, False if user context
+        """
+        if not self.api_key:
+            return False
+        
+        # Check for agent-specific environment variables (set during deployment)
+        # These are only present in deployed agent containers
+        agent_env_indicators = [
+            "TELEON_DEPLOYMENT_ID",
+            "TELEON_AGENT_ID", 
+            "ECS_CONTAINER_METADATA_URI",  # AWS ECS indicator
+            "KUBERNETES_SERVICE_HOST",  # Kubernetes indicator
+        ]
+        
+        for env_var in agent_env_indicators:
+            if os.environ.get(env_var):
+                return True
+        
+        # If the API key is a UUID (legacy deployment_id), it's an agent context
+        import re
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        if re.match(uuid_pattern, self.api_key, re.IGNORECASE):
+            return True
+        
+        # If we're running in a containerized environment and have TELEON_API_KEY,
+        # it's likely a deployed agent (service account token)
+        # Check for container indicators
+        container_indicators = [
+            os.environ.get("ECS_CONTAINER_METADATA_URI"),
+            os.environ.get("KUBERNETES_SERVICE_HOST"),
+            os.environ.get("DOCKER_CONTAINER"),
+        ]
+        
+        if any(container_indicators) and self.api_key.startswith("eyJ"):
+            # In container + JWT token = likely service account token (agent)
+            return True
+        
+        # Default: assume user context (safer - user endpoint has more validation)
+        return False
 
     def log(
         self,
@@ -402,39 +455,106 @@ class AuditLogger:
             self._pending_logs = []
 
         try:
-            # Prepare payload
-            payload = {
-                "logs": [
-                    {
-                        "agent_id": log.agent_id,
-                        "agent_name": log.agent_name,
-                        "action_type": log.action_type if isinstance(log.action_type, str) else log.action_type.value,
-                        "action": log.action,
-                        "status": log.status,
-                        "input_data": log.input_data,
-                        "output_data": log.output_data,
-                        "duration_ms": log.duration_ms,
-                        "metadata": log.metadata,
-                    }
-                    for log in logs_to_send
-                ]
-            }
+            # Prepare log entries
+            log_entries = [
+                {
+                    "agent_id": log.agent_id,
+                    "agent_name": log.agent_name,
+                    "action_type": log.action_type if isinstance(log.action_type, str) else log.action_type.value,
+                    "action": log.action,
+                    "status": log.status,
+                    "input_data": log.input_data,
+                    "output_data": log.output_data,
+                    "duration_ms": log.duration_ms,
+                    "metadata": log.metadata,
+                }
+                for log in logs_to_send
+            ]
+            
+            # Use agent endpoint if in agent context, otherwise user endpoint
+            if self._is_agent_context:
+                # Agent endpoint: expects list directly, uses service account token
+                endpoint = f"{self.api_url}/api/v1/governance/audit-logs/batch/agent"
+                payload = log_entries  # Send list directly
+            else:
+                # User endpoint: expects wrapped in "logs" key, uses user JWT
+                endpoint = f"{self.api_url}/api/v1/governance/audit-logs/batch"
+                payload = {"logs": log_entries}  # Wrap in dict
 
-            async with httpx.AsyncClient() as client:
+            # SECURITY: Enforce HTTPS (SOC 2 requirement)
+            if not self.api_url.startswith("https://"):
+                self.logger.warning(
+                    "Audit log submission requires HTTPS. Disabling remote logging.",
+                    extra={"api_url": self.api_url}
+                )
+                return
+            
+            # SECURITY: Create client with security settings
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0),  # Reduced timeout
+                verify=True,  # Verify SSL certificates
+                follow_redirects=False,  # Don't follow redirects (security)
+            ) as client:
                 response = await client.post(
-                    f"{self.api_url}/api/v1/governance/audit-logs/batch",
+                    endpoint,
                     json=payload,
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
+                        "User-Agent": "Teleon-Agent-AuditLogger/1.0",  # Identify client
                     },
-                    timeout=5.0,  # Reduced timeout to prevent blocking agent calls
                 )
                 response.raise_for_status()
+                
+                # SECURITY: Log successful submission for audit trail
+                self.logger.debug(
+                    f"Successfully submitted {len(logs_to_send)} audit log(s)",
+                    extra={"endpoint": endpoint, "status_code": response.status_code}
+                )
 
+        except httpx.HTTPStatusError as e:
+            # SECURITY: Handle HTTP errors without leaking sensitive info
+            status_code = e.response.status_code
+            if status_code == 401:
+                # Authentication failed - disable remote logging to prevent spam
+                self.logger.error(
+                    "Authentication failed for audit log submission. Disabling remote logging.",
+                    extra={"status_code": status_code, "endpoint": endpoint}
+                )
+                self.enable_remote_logging = False
+            elif status_code == 429:
+                # Rate limited - back off
+                self.logger.warning(
+                    "Rate limited for audit log submission. Will retry later.",
+                    extra={"status_code": status_code}
+                )
+                # Re-queue with backoff
+                with self._pending_lock:
+                    if len(self._pending_logs) < 1000:
+                        self._pending_logs = logs_to_send + self._pending_logs
+            else:
+                # Other HTTP errors - re-queue
+                self.logger.warning(
+                    f"HTTP error submitting audit logs: {status_code}",
+                    extra={"status_code": status_code, "endpoint": endpoint}
+                )
+                with self._pending_lock:
+                    if len(self._pending_logs) < 1000:
+                        self._pending_logs = logs_to_send + self._pending_logs
+        except httpx.TimeoutException:
+            # SECURITY: Timeout - re-queue but don't spam
+            self.logger.warning("Timeout submitting audit logs. Will retry later.")
+            with self._pending_lock:
+                if len(self._pending_logs) < 1000:
+                    self._pending_logs = logs_to_send + self._pending_logs
         except Exception as e:
+            # SECURITY: Generic error handling - don't leak sensitive info
+            self.logger.warning(
+                "Failed to submit audit logs to platform",
+                exc_info=True,
+                extra={"error_type": type(e).__name__, "endpoint": endpoint}
+            )
             # Re-queue failed logs (with limit to prevent memory issues)
-            print(f"Warning: Failed to submit audit logs to platform: {e}")
             with self._pending_lock:
                 if len(self._pending_logs) < 1000:
                     # Add back to front of queue
