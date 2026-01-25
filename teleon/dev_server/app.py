@@ -59,7 +59,7 @@ class AgentResponse(BaseModel):
     """Response from an agent."""
     agent_id: str
     agent_name: str
-    output: str
+    output: Any  # Accept any return type: str, dict, list, etc. (will be JSON serialized)
     tokens_used: Optional[int] = None
     cost: Optional[float] = None
     latency_ms: Optional[float] = None
@@ -777,7 +777,9 @@ curl -X POST http://localhost:8000/invoke \\
                                             "properties": {
                                                 "agent_id": {"type": "string"},
                                                 "agent_name": {"type": "string"},
-                                                "output": {"type": "string"},
+                                                "output": {
+                                                    "description": "Agent output - can be string, object, array, or any JSON-serializable type"
+                                                },
                                                 "tokens_used": {"type": "integer"},
                                                 "cost": {"type": "number"},
                                                 "latency_ms": {"type": "number"},
