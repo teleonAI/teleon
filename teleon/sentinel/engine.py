@@ -168,7 +168,8 @@ class SentinelEngine:
                     agent_id=agent_name,
                     violation_type=violation.get('type', 'unknown'),
                     action_taken=action.value,
-                    details=violation
+                    details=violation,
+                    validation_type="input"
                 )
         
         # Block if action is BLOCK
@@ -287,7 +288,8 @@ class SentinelEngine:
                     agent_id=agent_name,
                     violation_type=violation.get('type', 'unknown'),
                     action_taken=action.value,
-                    details=violation
+                    details=violation,
+                    validation_type="output"
                 )
         
         # Block if action is BLOCK
