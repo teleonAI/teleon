@@ -88,7 +88,8 @@ class SentinelAuditLogger:
         agent_id: str,
         violation_type: str,
         action_taken: str,
-        details: Dict[str, Any]
+        details: Dict[str, Any],
+        validation_type: str = "input"  # "input" or "output"
     ) -> None:
         """
         Log a violation.
@@ -135,18 +136,17 @@ class SentinelAuditLogger:
         )
         
         # Persist to platform via dedicated Sentinel persistence layer (non-blocking)
+        # CRITICAL: This must never block agent execution - all operations are fire-and-forget
         if self.violation_persistence:
             try:
-                # Determine validation type from context (default to input)
-                # This could be enhanced to track whether this is input or output validation
-                validation_type = "input"  # Could be passed as parameter in future
-                
-                # Submit is now fully non-blocking - just schedule it
+                # submit_violation() is fully non-blocking - it queues and returns immediately
+                # We don't await it, ensuring zero latency impact on agent calls
                 import asyncio
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        # Fire-and-forget - submit_violation is now non-blocking
+                        # Fire-and-forget - create_task() schedules but doesn't block
+                        # submit_violation() itself is non-blocking (queues and returns)
                         loop.create_task(
                             self.violation_persistence.submit_violation(
                                 violation_type=violation_type,
@@ -156,21 +156,16 @@ class SentinelAuditLogger:
                             )
                         )
                     else:
-                        # If no loop, create one just for scheduling (non-blocking)
-                        asyncio.ensure_future(
-                            self.violation_persistence.submit_violation(
-                                violation_type=violation_type,
-                                action_taken=action_taken,
-                                details=details,
-                                validation_type=validation_type
-                            )
-                        )
+                        # If no loop, violations will be queued when loop starts
+                        # Background flush task will handle submission
+                        pass
                 except RuntimeError:
                     # No event loop available - violations will be queued when loop starts
-                    # This is fine, the background flush will handle it
+                    # Background flush will handle it - zero impact on agent execution
                     pass
             except Exception as e:
                 # Don't fail if persistence fails - violation is still stored in-memory
+                # Logging failures must never impact agent execution
                 self.logger.warning(f"Failed to schedule violation persistence: {e}")
     
     def get_violations(
@@ -305,4 +300,3 @@ class SentinelAuditLogger:
                 self.violation_counts.clear()
                 self.agent_violations.clear()
                 return count
-
