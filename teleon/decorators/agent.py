@@ -103,9 +103,62 @@ def agent(
         # Initialize Sentinel if configured (lazy initialization in wrapper)
         sentinel_config = sentinel
         
+        # Lazy-initialized AuditLogger for this agent (singleton per agent)
+        _audit_logger = None
+        _audit_logger_lock = None
+        
+        def _get_audit_logger():
+            """Get or create AuditLogger for this agent (lazy initialization, thread-safe)."""
+            nonlocal _audit_logger, _audit_logger_lock
+            if _audit_logger is None:
+                try:
+                    import threading
+                    import os
+                    if _audit_logger_lock is None:
+                        _audit_logger_lock = threading.Lock()
+                    
+                    with _audit_logger_lock:
+                        # Double-check pattern
+                        if _audit_logger is None:
+                            from teleon.governance.audit import AuditLogger
+                            # Only enable if API credentials are available
+                            api_url = os.getenv('TELEON_API_URL') or os.getenv('TELEON_PLATFORM_URL')
+                            api_key = os.getenv('TELEON_API_KEY')
+                            
+                            if api_url and api_key:
+                                _audit_logger = AuditLogger(
+                                    agent_id=config.name,  # Use agent name as ID
+                                    agent_name=config.name,
+                                    enable_remote_logging=True,
+                                    api_url=api_url,
+                                    api_key=api_key,
+                                    batch_size=50,  # Batch for efficiency
+                                    flush_interval=10.0  # Flush every 10 seconds
+                                )
+                            else:
+                                # No API credentials - disable remote logging
+                                _audit_logger = AuditLogger(
+                                    agent_id=config.name,
+                                    agent_name=config.name,
+                                    enable_remote_logging=False
+                                )
+                except ImportError:
+                    # Governance module not available - audit logging disabled
+                    pass
+                except Exception as e:
+                    # Log but don't fail - audit logging is optional
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                        logger.warning(f"Failed to initialize audit logger: {e}")
+                    except ImportError:
+                        pass
+            
+            return _audit_logger
+        
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            """Wrapper that adds agent capabilities."""
+            """Wrapper that adds agent capabilities: Sentinel, memory, cost tracking, execution context, audit logging."""
             
             # Generate execution ID
             execution_id = str(uuid.uuid4())
@@ -123,6 +176,40 @@ def agent(
             # Setup tracing span
             span_id = f"agent.{config.name}.{execution_id}"
             start_time = time.time()
+            
+            # AUDIT LOGGING: Log request (NON-BLOCKING)
+            # This queues the log but doesn't await submission
+            audit_logger = _get_audit_logger()
+            if audit_logger:
+                try:
+                    # Prepare input data (sanitize for logging)
+                    input_data = {}
+                    if args:
+                        input_data['args'] = str(args)[:500]  # Limit size
+                    if kwargs:
+                        # Filter sensitive keys
+                        safe_kwargs = {k: str(v)[:200] if not isinstance(v, (str, int, float, bool, type(None))) else v 
+                                     for k, v in kwargs.items()}
+                        input_data['kwargs'] = safe_kwargs
+                    
+                    # Log request (non-blocking - just queues)
+                    audit_logger.log_request(
+                        action=f"Agent execution: {config.name}",
+                        input_data=input_data if input_data else None,
+                        metadata={
+                            "execution_id": execution_id,
+                            "agent_name": config.name,
+                            "span_id": span_id
+                        }
+                    )
+                except Exception as e:
+                    # Audit logging failures must never impact agent execution
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                        logger.warning(f"Failed to log audit request: {e}")
+                    except ImportError:
+                        pass
             
             # Initialize memory if enabled
             memory_session = None
@@ -295,6 +382,39 @@ def agent(
                     # Metrics not available
                     pass
                 
+                # AUDIT LOGGING: Log successful response (NON-BLOCKING)
+                if audit_logger:
+                    try:
+                        # Prepare output data (sanitize for logging)
+                        output_data = {}
+                        if result is not None:
+                            # Limit output size for logging
+                            result_str = str(result)
+                            output_data['result'] = result_str[:1000]  # Limit to 1KB
+                            output_data['result_type'] = type(result).__name__
+                        
+                        # Log response (non-blocking - just queues)
+                        audit_logger.log_response(
+                            action=f"Agent execution completed: {config.name}",
+                            output_data=output_data if output_data else None,
+                            duration_ms=int(duration * 1000),
+                            status="success",
+                            metadata={
+                                "execution_id": execution_id,
+                                "agent_name": config.name,
+                                "cost": total_cost,
+                                "span_id": span_id
+                            }
+                        )
+                    except Exception as e:
+                        # Audit logging failures must never impact agent execution
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                            logger.warning(f"Failed to log audit response: {e}")
+                        except ImportError:
+                            pass
+                
                 return result
                 
             except Exception as e:
@@ -303,6 +423,33 @@ def agent(
                 
                 # Calculate execution time
                 duration = time.time() - start_time
+                
+                # AUDIT LOGGING: Log error response (NON-BLOCKING)
+                if audit_logger:
+                    try:
+                        # Log error (non-blocking - just queues)
+                        audit_logger.log_response(
+                            action=f"Agent execution failed: {config.name}",
+                            output_data={
+                                "error": str(e),
+                                "error_type": type(e).__name__
+                            },
+                            duration_ms=int(duration * 1000),
+                            status="error",
+                            metadata={
+                                "execution_id": execution_id,
+                                "agent_name": config.name,
+                                "span_id": span_id
+                            }
+                        )
+                    except Exception as e2:
+                        # Audit logging failures must never impact agent execution
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                            logger.warning(f"Failed to log audit error: {e2}")
+                        except ImportError:
+                            pass
                 
                 # Record failure for learning
                 if config.memory:
@@ -389,4 +536,3 @@ def agent(
         return cast(F, wrapper)
     
     return decorator
-
