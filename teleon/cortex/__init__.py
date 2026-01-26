@@ -307,20 +307,20 @@ class CortexMemory:
                 await self.procedural.initialize()
                 initialized_components.append("procedural")
             
-        # Initialize monitoring and profiling
-        self._metrics = CortexMetrics(agent_id=self.agent_id)
-        self._profiler = PerformanceProfiler(slow_threshold_ms=100.0)
-        
-        self._initialized = True
-        
-        # Register with global registry for API/CLI access
-        try:
-            from teleon.cortex.registry import registry
-            asyncio.create_task(registry.register(self.agent_id, self))
-        except Exception as e:
-            import logging
-            logger = logging.getLogger("teleon.cortex")
-            logger.debug(f"Could not register Cortex instance: {e}")
+            # Initialize monitoring and profiling
+            self._metrics = CortexMetrics(agent_id=self.agent_id)
+            self._profiler = PerformanceProfiler(slow_threshold_ms=100.0)
+            
+            self._initialized = True
+            
+            # Register with global registry for API/CLI access
+            try:
+                from teleon.cortex.registry import registry
+                asyncio.create_task(registry.register(self.agent_id, self))
+            except Exception as e:
+                import logging
+                logger = logging.getLogger("teleon.cortex")
+                logger.debug(f"Could not register Cortex instance: {e}")
             
         except Exception as e:
             # Cleanup initialized components on error
@@ -473,7 +473,7 @@ class CortexMemory:
         # Get recent episodes
         if self.episodic:
             recent = await self.episodic.get_recent(limit=limit)
-            context["recent_episodes"] = [ep.dict() for ep in recent]
+            context["recent_episodes"] = [ep.model_dump(mode='python') for ep in recent]
         
         # Search semantic memory
         if self.semantic and query:
@@ -487,7 +487,7 @@ class CortexMemory:
         if self.procedural and query:
             pattern = await self.procedural.find_pattern(query)
             if pattern:
-                context["suggested_pattern"] = pattern.dict()
+                context["suggested_pattern"] = pattern.model_dump(mode='python')
         
         return context
     
@@ -1077,9 +1077,16 @@ class CortexMemory:
         
         # Clean up knowledge
         if self.semantic:
-            # Get all entries (limit for safety)
-            results = await self.semantic.search("", limit=500, min_similarity=0.0)
-            entries = [entry for entry, _ in results]
+            # Get all entries by listing keys (more efficient than empty search)
+            pattern = f"{self.semantic._key_prefix}:entry:*"
+            entry_keys = await self.semantic.storage.list_keys(pattern, limit=500)
+            
+            # Extract entry IDs from keys
+            entry_ids = [key.split(":")[-1] for key in entry_keys if ":entry:" in key]
+            
+            if entry_ids:
+                # Batch fetch entries
+                entries = await self.semantic.get_batch(entry_ids)
             
             to_forget = await forgetfulness.identify_forgettable_knowledge(entries)
             
@@ -1211,4 +1218,3 @@ __all__ = [
     "AdaptiveMemoryManager",
     "PerformanceOptimizer",
 ]
-
