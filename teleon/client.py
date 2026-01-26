@@ -323,6 +323,69 @@ class TeleonClient:
             # Store sentinel config for wrapper
             sentinel_config = sentinel
             
+            # Store cortex config for wrapper
+            cortex_config = cortex
+            
+            # Lazy-initialized Cortex instance for this agent
+            _cortex_instance = None
+            _cortex_lock = None
+            
+            async def _get_cortex():
+                """Get or create Cortex instance (lazy initialization, thread-safe)."""
+                nonlocal _cortex_instance, _cortex_lock
+                if _cortex_instance is None and cortex_config:
+                    try:
+                        import asyncio
+                        if _cortex_lock is None:
+                            _cortex_lock = asyncio.Lock()
+                        
+                        async with _cortex_lock:
+                            # Double-check pattern
+                            if _cortex_instance is None:
+                                from teleon.cortex import create_cortex, CortexConfig
+                                from teleon.cortex.registry import registry
+                                
+                                # Try to get from registry first
+                                _cortex_instance = await registry.get(agent_id)
+                                
+                                if _cortex_instance is None:
+                                    # Map cortex config dict to CortexConfig
+                                    # The cortex_config dict has keys like 'learning', 'memory_types', etc.
+                                    # which need to be mapped to CortexConfig fields
+                                    cortex_cfg = None
+                                    if isinstance(cortex_config, dict):
+                                        # Map memory_types to enabled flags
+                                        memory_types = cortex_config.get('memory_types', [])
+                                        cortex_cfg = CortexConfig(
+                                            working_enabled='working' in memory_types if memory_types else True,
+                                            episodic_enabled='episodic' in memory_types if memory_types else True,
+                                            semantic_enabled='semantic' in memory_types if memory_types else True,
+                                            procedural_enabled='procedural' in memory_types if memory_types else True,
+                                            learning_enabled=cortex_config.get('learning', True),
+                                            min_success_rate=cortex_config.get('procedural_config', {}).get('min_success_rate', 50.0) if isinstance(cortex_config.get('procedural_config'), dict) else 50.0
+                                        )
+                                    
+                                    # Create new Cortex instance
+                                    _cortex_instance = await create_cortex(
+                                        agent_id=agent_id,
+                                        storage_backend=cortex_config.get('storage', 'memory') if isinstance(cortex_config, dict) else 'memory',
+                                        config=cortex_cfg
+                                    )
+                                    await _cortex_instance.initialize()
+                                    # Register it
+                                    await registry.register(agent_id, _cortex_instance)
+                    except Exception as e:
+                        # Cortex initialization failed, log but continue
+                        try:
+                            from teleon.core import StructuredLogger, LogLevel
+                            logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                            logger.warning(f"Failed to initialize Cortex: {e}")
+                        except ImportError:
+                            pass
+                        _cortex_instance = None
+                
+                return _cortex_instance
+            
             # Lazy-initialized AuditLogger for this agent (singleton per agent)
             _audit_logger = None
             _audit_logger_lock = None
@@ -586,9 +649,56 @@ class TeleonClient:
                     
                     # Calculate execution time
                     duration = time.time() - start_time
+                    duration_ms = int(duration * 1000)
                     
-                    # Store execution in episodic memory
-                    if memory_enabled and memory_session:
+                    # AUTOMATIC CORTEX RECORDING - This is what was missing!
+                    cortex_instance = await _get_cortex()
+                    if cortex_instance:
+                        try:
+                            # Prepare input data
+                            input_data = {}
+                            if args:
+                                # Try to extract meaningful input from args
+                                if len(args) == 1 and isinstance(args[0], (str, dict)):
+                                    input_data = args[0] if isinstance(args[0], dict) else {"query": args[0]}
+                                else:
+                                    input_data = {"args": args}
+                            
+                            # Merge kwargs into input_data
+                            if kwargs:
+                                input_data.update(kwargs)
+                            
+                            # Prepare output data
+                            output_data = result if isinstance(result, dict) else {"response": result}
+                            
+                            # Extract session_id from input if available
+                            session_id = input_data.get('customer_id') or input_data.get('session_id') or input_data.get('user_id') or execution_id
+                            
+                            # Record interaction in Cortex
+                            await cortex_instance.record_interaction(
+                                input_data=input_data,
+                                output_data=output_data,
+                                success=True,
+                                cost=total_cost if total_cost > 0 else None,
+                                duration_ms=duration_ms,
+                                session_id=session_id,
+                                context={
+                                    "execution_id": execution_id,
+                                    "agent_name": name,
+                                    "agent_id": agent_id
+                                }
+                            )
+                        except Exception as e:
+                            # Cortex recording failed, log but don't fail execution
+                            try:
+                                from teleon.core import StructuredLogger, LogLevel
+                                logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                                logger.warning(f"Failed to record interaction in Cortex: {e}")
+                            except ImportError:
+                                pass
+                    
+                    # Store execution in episodic memory (legacy - for backward compatibility)
+                    if memory_enabled and memory_session and not cortex_instance:
                         try:
                             from teleon.memory.episodic import EpisodicMemory
                             episodic = EpisodicMemory()
@@ -612,8 +722,8 @@ class TeleonClient:
                             # Episodic memory not available or failed
                             pass
                     
-                    # Update procedural memory (learning)
-                    if memory_enabled:
+                    # Update procedural memory (legacy - for backward compatibility)
+                    if memory_enabled and not cortex_instance:
                         try:
                             from teleon.memory.procedural import ProceduralMemory
                             procedural = ProceduralMemory()
@@ -685,9 +795,47 @@ class TeleonClient:
                     
                     # Calculate execution time
                     duration = time.time() - start_time
+                    duration_ms = int(duration * 1000)
                     
-                    # Record failure for learning
-                    if memory_enabled:
+                    # AUTOMATIC CORTEX RECORDING FOR FAILURES
+                    cortex_instance = await _get_cortex()
+                    if cortex_instance:
+                        try:
+                            # Prepare input data
+                            input_data = {}
+                            if args:
+                                if len(args) == 1 and isinstance(args[0], (str, dict)):
+                                    input_data = args[0] if isinstance(args[0], dict) else {"query": args[0]}
+                                else:
+                                    input_data = {"args": args}
+                            if kwargs:
+                                input_data.update(kwargs)
+                            
+                            session_id = input_data.get('customer_id') or input_data.get('session_id') or input_data.get('user_id') or execution_id
+                            
+                            # Record failed interaction in Cortex
+                            await cortex_instance.record_interaction(
+                                input_data=input_data,
+                                output_data={"error": str(e), "error_type": type(e).__name__},
+                                success=False,
+                                duration_ms=duration_ms,
+                                session_id=session_id,
+                                context={
+                                    "execution_id": execution_id,
+                                    "agent_name": name,
+                                    "agent_id": agent_id
+                                }
+                            )
+                        except Exception as cortex_error:
+                            try:
+                                from teleon.core import StructuredLogger, LogLevel
+                                logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                                logger.warning(f"Failed to record failure in Cortex: {cortex_error}")
+                            except ImportError:
+                                pass
+                    
+                    # Record failure for learning (legacy - for backward compatibility)
+                    if memory_enabled and not cortex_instance:
                         try:
                             from teleon.memory.procedural import ProceduralMemory
                             procedural = ProceduralMemory()
@@ -1029,4 +1177,3 @@ def init_teleon(api_key: str, environment: str = "dev") -> TeleonClient:
         TeleonClient instance
     """
     return TeleonClient(api_key=api_key, environment=environment)
-
