@@ -87,17 +87,31 @@ def discover_agents(
 
                 module = importlib.util.module_from_spec(spec)
                 
-                # Add module's directory to sys.path temporarily
+                # Add module's directory and parent directory to sys.path temporarily
+                # This allows imports like 'from teleon import ...' to work
                 module_dir = str(py_file.parent.absolute())
+                parent_dir = str(py_file.parent.parent.absolute()) if py_file.parent.parent else None
+                
+                added_paths = []
                 if module_dir not in sys.path:
                     sys.path.insert(0, module_dir)
+                    added_paths.append(module_dir)
+                
+                # Add parent directory if it exists and contains teleon module
+                if parent_dir and parent_dir not in sys.path:
+                    # Check if parent directory has teleon (project root)
+                    teleon_path = Path(parent_dir) / "teleon"
+                    if teleon_path.exists() and teleon_path.is_dir():
+                        sys.path.insert(0, parent_dir)
+                        added_paths.append(parent_dir)
 
                 try:
                     spec.loader.exec_module(module)
                 finally:
                     # Clean up sys.path
-                    if module_dir in sys.path:
-                        sys.path.remove(module_dir)
+                    for path in added_paths:
+                        if path in sys.path:
+                            sys.path.remove(path)
 
                 # Look for TeleonClient instances and their agents
                 file_has_agents = False
@@ -147,9 +161,17 @@ def discover_agents(
                     print("⚠️  error")
                 continue
             except Exception as e:
-                # Silently skip files that can't be imported
+                # Show error details in verbose mode
                 if verbose:
-                    print(f"⚠️  {type(e).__name__}")
+                    import traceback
+                    error_msg = str(e)
+                    if len(error_msg) > 150:
+                        error_msg = error_msg[:150] + "..."
+                    print(f"⚠️  {type(e).__name__}: {error_msg}")
+                    # Print full traceback for debugging
+                    tb_lines = traceback.format_exc().split('\n')
+                    if len(tb_lines) > 3:
+                        print(f"      {tb_lines[-2]}")  # Show the actual error line
                 continue
         
         # Print clean summary
