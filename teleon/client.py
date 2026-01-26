@@ -336,6 +336,9 @@ class TeleonClient:
                 if _cortex_instance is None and cortex_config:
                     try:
                         import asyncio
+                        import logging
+                        logger = logging.getLogger("teleon.agent.cortex")
+                        
                         if _cortex_lock is None:
                             _cortex_lock = asyncio.Lock()
                         
@@ -344,6 +347,8 @@ class TeleonClient:
                             if _cortex_instance is None:
                                 from teleon.cortex import create_cortex, CortexConfig
                                 from teleon.cortex.registry import registry
+                                
+                                logger.info(f"Initializing Cortex for agent_id={agent_id}, cortex_config={cortex_config}")
                                 
                                 # Try to get from registry first
                                 _cortex_instance = await registry.get(agent_id)
@@ -364,22 +369,32 @@ class TeleonClient:
                                             learning_enabled=cortex_config.get('learning', True),
                                             min_success_rate=cortex_config.get('procedural_config', {}).get('min_success_rate', 50.0) if isinstance(cortex_config.get('procedural_config'), dict) else 50.0
                                         )
+                                        logger.info(f"Created CortexConfig: episodic={cortex_cfg.episodic_enabled}, semantic={cortex_cfg.semantic_enabled}, procedural={cortex_cfg.procedural_enabled}")
                                     
                                     # Create new Cortex instance
+                                    storage_backend = cortex_config.get('storage', 'memory') if isinstance(cortex_config, dict) else 'memory'
+                                    logger.info(f"Creating Cortex with storage_backend={storage_backend}")
+                                    
                                     _cortex_instance = await create_cortex(
                                         agent_id=agent_id,
-                                        storage_backend=cortex_config.get('storage', 'memory') if isinstance(cortex_config, dict) else 'memory',
+                                        storage_backend=storage_backend,
                                         config=cortex_cfg
                                     )
                                     await _cortex_instance.initialize()
                                     # Register it
                                     await registry.register(agent_id, _cortex_instance)
+                                    logger.info(f"Cortex initialized and registered for agent_id={agent_id}")
+                                else:
+                                    logger.info(f"Retrieved existing Cortex instance from registry for agent_id={agent_id}")
                     except Exception as e:
                         # Cortex initialization failed, log but continue
+                        import logging
+                        logger = logging.getLogger("teleon.agent.cortex")
+                        logger.error(f"Failed to initialize Cortex for agent_id={agent_id}: {e}", exc_info=True)
                         try:
                             from teleon.core import StructuredLogger, LogLevel
-                            logger = StructuredLogger("agent.client", LogLevel.WARNING)
-                            logger.warning(f"Failed to initialize Cortex: {e}")
+                            structured_logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                            structured_logger.warning(f"Failed to initialize Cortex: {e}")
                         except ImportError:
                             pass
                         _cortex_instance = None
@@ -461,6 +476,8 @@ class TeleonClient:
                     input_args=args,
                     input_kwargs=kwargs,
                 )
+                # Add agent_id to context for easy access
+                ctx.agent_id = agent_id  # type: ignore
                 
                 # Setup tracing span
                 span_id = f"agent.{name}.{execution_id}"
@@ -672,10 +689,18 @@ class TeleonClient:
                             output_data = result if isinstance(result, dict) else {"response": result}
                             
                             # Extract session_id from input if available
-                            session_id = input_data.get('customer_id') or input_data.get('session_id') or input_data.get('user_id') or execution_id
+                            # Use "anonymous" as consistent session_id for anonymous users
+                            # This allows anonymous users to see conversation history
+                            customer_id_val = input_data.get('customer_id')
+                            if customer_id_val and customer_id_val != "anonymous":
+                                session_id = customer_id_val
+                            else:
+                                # For anonymous users, use "anonymous" instead of execution_id
+                                # so all anonymous conversations are grouped together
+                                session_id = input_data.get('session_id') or input_data.get('user_id') or "anonymous"
                             
                             # Record interaction in Cortex
-                            await cortex_instance.record_interaction(
+                            episode_id = await cortex_instance.record_interaction(
                                 input_data=input_data,
                                 output_data=output_data,
                                 success=True,
@@ -688,14 +713,29 @@ class TeleonClient:
                                     "agent_id": agent_id
                                 }
                             )
+                            # Log successful recording (for debugging)
+                            import logging
+                            logger = logging.getLogger("teleon.agent.cortex")
+                            logger.info(f"Cortex recorded interaction: episode_id={episode_id}, agent_id={agent_id}, session_id={session_id}")
                         except Exception as e:
                             # Cortex recording failed, log but don't fail execution
+                            import logging
+                            logger = logging.getLogger("teleon.agent.cortex")
+                            logger.error(f"Failed to record interaction in Cortex: {e}", exc_info=True)
                             try:
                                 from teleon.core import StructuredLogger, LogLevel
-                                logger = StructuredLogger("agent.client", LogLevel.WARNING)
-                                logger.warning(f"Failed to record interaction in Cortex: {e}")
+                                structured_logger = StructuredLogger("agent.client", LogLevel.WARNING)
+                                structured_logger.warning(f"Failed to record interaction in Cortex: {e}")
                             except ImportError:
                                 pass
+                    else:
+                        # Log when Cortex is not available
+                        import logging
+                        logger = logging.getLogger("teleon.agent.cortex")
+                        if cortex_config:
+                            logger.warning(f"Cortex config exists but instance is None. agent_id={agent_id}, cortex_config={cortex_config}")
+                        else:
+                            logger.debug(f"Cortex not configured for agent: {agent_id}")
                     
                     # Store execution in episodic memory (legacy - for backward compatibility)
                     if memory_enabled and memory_session and not cortex_instance:
@@ -1177,3 +1217,4 @@ def init_teleon(api_key: str, environment: str = "dev") -> TeleonClient:
         TeleonClient instance
     """
     return TeleonClient(api_key=api_key, environment=environment)
+
