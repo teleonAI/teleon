@@ -23,7 +23,7 @@ import os
 import sys
 
 from teleon.core import StructuredLogger, LogLevel
-from teleon.cortex.registry import registry
+from teleon.cortex.manager import get_memory_manager, _managers as cortex_managers
 from teleon.sentinel.registry import get_sentinel_registry
 from teleon.sentinel.audit import SentinelAuditLogger
 from teleon.client import TeleonClient
@@ -270,8 +270,8 @@ def create_dashboard_app() -> FastAPI:
                     )
                 )
                 stats = result.first()
-                
-                return DashboardStats(
+        
+        return DashboardStats(
                     totalAgents=stats.total_agents or 0,
                     activeAgents=stats.active_agents or 0,
                     totalRequests=stats.total_requests or 0,
@@ -293,7 +293,7 @@ def create_dashboard_app() -> FastAPI:
                 activeAgents=0,
                 totalRequests=0,
                 totalCost=0.0
-            )
+        )
     
     @app.get("/api/agents", response_model=List[AgentInfo])
     async def list_agents(limit: Optional[int] = None, db: Optional[AsyncSession] = Depends(get_db)):
@@ -302,7 +302,7 @@ def create_dashboard_app() -> FastAPI:
             try:
                 # Get agents from database
                 query = select(Agent).order_by(desc(Agent.created_at))
-                if limit:
+        if limit:
                     query = query.limit(limit)
                 
                 result = await db.execute(query)
@@ -318,9 +318,9 @@ def create_dashboard_app() -> FastAPI:
                     sentinel_agent_ids = set()
                 
                 try:
-                    cortex_agent_ids = set(await registry.list_agents())
+                    cortex_agent_ids = set(cortex_managers.keys())
                 except Exception as e:
-                    logger.warning(f"Error getting Cortex registry: {e}")
+                    logger.warning(f"Error getting Cortex managers: {e}")
                     cortex_agent_ids = set()
                 
                 # Convert to AgentInfo
@@ -357,8 +357,8 @@ def create_dashboard_app() -> FastAPI:
                 agent = result.scalar_one_or_none()
                 
                 if not agent:
-                    raise HTTPException(status_code=404, detail="Agent not found")
-                
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
                 # Use database values (source of truth)
                 agent_dict = agent.to_dict()
                 # Database already has has_sentinel and has_cortex from deployment
@@ -385,8 +385,8 @@ def create_dashboard_app() -> FastAPI:
                 agent = result.scalar_one_or_none()
                 
                 if not agent:
-                    raise HTTPException(status_code=404, detail="Agent not found")
-                
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
                 # Update status
                 try:
                     agent.status = AgentStatusEnum(status.status)
@@ -397,10 +397,10 @@ def create_dashboard_app() -> FastAPI:
                 agent.updated_at = datetime.now(timezone.utc)
                 
                 await db.commit()
-                
-                logger.info(f"Agent {agent_id} status updated to {status.status}")
-                
-                return {"message": "Status updated", "status": status.status}
+        
+        logger.info(f"Agent {agent_id} status updated to {status.status}")
+        
+        return {"message": "Status updated", "status": status.status}
             except HTTPException:
                 raise
             except Exception as e:
@@ -422,14 +422,14 @@ def create_dashboard_app() -> FastAPI:
                 agent = result.scalar_one_or_none()
                 
                 if not agent:
-                    raise HTTPException(status_code=404, detail="Agent not found")
-                
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
                 await db.delete(agent)
                 await db.commit()
                 
-                logger.info(f"Agent {agent_id} deleted")
-                
-                return {"message": "Agent deleted"}
+        logger.info(f"Agent {agent_id} deleted")
+        
+        return {"message": "Agent deleted"}
             except HTTPException:
                 raise
             except Exception as e:
@@ -480,19 +480,29 @@ def create_dashboard_app() -> FastAPI:
     async def get_cortex_metrics(agent_id: str):
         """
         Get Cortex memory metrics for an agent.
-        
-        Returns real-time operation metrics, cache stats, and memory sizes.
+
+        Returns memory entry counts and basic statistics.
         """
         try:
-            cortex = await registry.get(agent_id)
-            if not cortex:
+            manager = get_memory_manager(agent_id)
+            if not manager:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Cortex instance not found for agent: {agent_id}"
+                    detail=f"Cortex not configured for agent: {agent_id}"
                 )
-            
-            metrics = cortex.get_metrics()
-            return metrics
+
+            # Create memory instance to get stats
+            memory = manager.create_memory({})
+            total_entries = await memory.count()
+
+            return {
+                "agent_id": agent_id,
+                "total_entries": total_entries,
+                "memory_name": manager.memory_name,
+                "scope": manager.config.scope,
+                "auto_save": manager.config.auto,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
         except HTTPException:
             raise
         except Exception as e:
@@ -503,79 +513,47 @@ def create_dashboard_app() -> FastAPI:
     async def get_cortex_health(agent_id: str):
         """
         Get Cortex memory system health status.
-        
-        Returns health status for all memory types and storage backends.
+
+        Returns health status for memory and storage backend.
         """
         try:
-            cortex = await registry.get(agent_id)
-            if not cortex:
+            manager = get_memory_manager(agent_id)
+            if not manager:
                 return {
-                    "status": "not_found",
+                    "status": "not_configured",
                     "agent_id": agent_id,
-                    "message": "Cortex instance not registered",
+                    "message": "Cortex not configured for this agent",
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            
-            if not cortex._initialized:
-                return {
-                    "status": "not_initialized",
-                    "agent_id": agent_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            
+
             # Perform health checks
             checks = {}
             latency_start = time.perf_counter()
-            
-            # Check episodic memory
-            if cortex.episodic:
-                try:
-                    await cortex.episodic.get_recent(limit=1)
-                    checks["episodic_memory"] = "healthy"
-                except Exception as e:
-                    checks["episodic_memory"] = f"unhealthy: {str(e)[:50]}"
-            else:
-                checks["episodic_memory"] = "disabled"
-            
-            # Check semantic memory
-            if cortex.semantic:
-                try:
-                    await cortex.semantic.get_statistics()
-                    checks["semantic_memory"] = "healthy"
-                except Exception as e:
-                    checks["semantic_memory"] = f"unhealthy: {str(e)[:50]}"
-            else:
-                checks["semantic_memory"] = "disabled"
-            
-            # Check procedural memory
-            if cortex.procedural:
-                try:
-                    await cortex.procedural.get_statistics()
-                    checks["procedural_memory"] = "healthy"
-                except Exception as e:
-                    checks["procedural_memory"] = f"unhealthy: {str(e)[:50]}"
-            else:
-                checks["procedural_memory"] = "disabled"
-            
-            # Check storage backend
-            if cortex.storage:
-                try:
-                    await cortex.storage.get_statistics()
-                    checks["storage_backend"] = "healthy"
-                except Exception as e:
-                    checks["storage_backend"] = f"unhealthy: {str(e)[:50]}"
-            else:
-                checks["storage_backend"] = "not_configured"
-            
+
+            # Check storage backend by performing a simple operation
+            try:
+                memory = manager.create_memory({})
+                await memory.count()
+                checks["storage"] = "healthy"
+            except Exception as e:
+                checks["storage"] = f"unhealthy: {str(e)[:50]}"
+
+            # Check embedding service
+            try:
+                if manager._embedding:
+                    checks["embeddings"] = "healthy"
+                else:
+                    checks["embeddings"] = "not_configured"
+            except Exception as e:
+                checks["embeddings"] = f"unhealthy: {str(e)[:50]}"
+
             latency_ms = (time.perf_counter() - latency_start) * 1000
-            
+
             # Determine overall status
             overall_status = "healthy"
             if any("unhealthy" in str(v) for v in checks.values()):
                 overall_status = "degraded"
-            elif any("disabled" in str(v) or "not_configured" in str(v) for v in checks.values()):
-                overall_status = "partial"
-            
+
             return {
                 "status": overall_status,
                 "agent_id": agent_id,
@@ -590,34 +568,36 @@ def create_dashboard_app() -> FastAPI:
     @app.get("/api/v1/agents/{agent_id}/cortex/performance")
     async def get_cortex_performance(agent_id: str, period: str = "24h"):
         """
-        Get Cortex performance profiling data.
-        
+        Get Cortex performance data.
+
         Args:
             agent_id: Agent ID
-            period: Time period (1h, 24h, 7d, 30d) - currently returns all data
-        
+            period: Time period (1h, 24h, 7d, 30d)
+
         Returns:
-            Performance statistics, slow operations, and recommendations
+            Basic performance statistics
         """
         try:
-            cortex = await registry.get(agent_id)
-            if not cortex:
+            manager = get_memory_manager(agent_id)
+            if not manager:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Cortex instance not found for agent: {agent_id}"
+                    detail=f"Cortex not configured for agent: {agent_id}"
                 )
-            
-            if not cortex._profiler:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Performance profiler not initialized"
-                )
-            
-            report = cortex.get_performance_report()
-            report["period"] = period
-            report["agent_id"] = agent_id
-            
-            return report
+
+            # Basic performance report
+            memory = manager.create_memory({})
+            total_entries = await memory.count()
+
+            return {
+                "agent_id": agent_id,
+                "period": period,
+                "total_entries": total_entries,
+                "memory_name": manager.memory_name,
+                "auto_save_enabled": manager.config.auto,
+                "auto_context_enabled": manager.config.auto_context.enabled,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
         except HTTPException:
             raise
         except Exception as e:
@@ -627,22 +607,34 @@ def create_dashboard_app() -> FastAPI:
     @app.get("/api/v1/agents/{agent_id}/cortex/statistics")
     async def get_cortex_statistics(agent_id: str):
         """
-        Get comprehensive Cortex memory statistics.
-        
-        Returns statistics from all memory types.
+        Get Cortex memory statistics.
+
+        Returns entry counts and configuration.
         """
         try:
-            cortex = await registry.get(agent_id)
-            if not cortex:
+            manager = get_memory_manager(agent_id)
+            if not manager:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Cortex instance not found for agent: {agent_id}"
+                    detail=f"Cortex not configured for agent: {agent_id}"
                 )
-            
-            stats = await cortex.get_statistics()
-            stats["agent_id"] = agent_id
-            
-            return stats
+
+            memory = manager.create_memory({})
+            total = await memory.count()
+
+            return {
+                "agent_id": agent_id,
+                "total_entries": total,
+                "memory_name": manager.memory_name,
+                "scope": manager.config.scope,
+                "auto_save": manager.config.auto,
+                "auto_context": {
+                    "enabled": manager.config.auto_context.enabled,
+                    "history_limit": manager.config.auto_context.history_limit,
+                    "relevant_limit": manager.config.auto_context.relevant_limit
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
         except HTTPException:
             raise
         except Exception as e:
@@ -1016,6 +1008,10 @@ def create_dashboard_app() -> FastAPI:
         return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
     
     return app
+
+
+# Sample data initialization removed - all data now comes from database
+
 
 # Helper function to get the app instance
 def get_dashboard_app() -> FastAPI:

@@ -191,13 +191,11 @@ class AuditLogger:
         for env_var in agent_env_indicators:
             if os.environ.get(env_var):
                 return True
-        
-        # If the API key is a UUID (legacy deployment_id), it's an agent context
-        import re
-        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-        if re.match(uuid_pattern, self.api_key, re.IGNORECASE):
-            return True
-        
+
+        # NOTE: Removed legacy UUID (deployment_id) detection for security.
+        # Agents must use proper JWT service account tokens, not raw deployment IDs.
+        # JWT tokens start with "eyJ" (base64 encoded JSON header).
+
         # If we're running in a containerized environment and have TELEON_API_KEY,
         # it's likely a deployed agent (service account token)
         # Check for container indicators

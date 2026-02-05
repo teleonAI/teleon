@@ -400,108 +400,107 @@ def validate_api_keys_in_code(agents, environment):
 
 
 def detect_agents():
-    """Detect agents in current directory"""
+    """Detect agents in current directory - scans ALL Python files recursively"""
     
-    # Look for agents.py or files with @client.agent
+    # Look for agents in any Python file, not just files named "agents.py"
     agents_found = []
     processed_files = set()  # Track processed files to avoid duplicates
     
-    # Check common locations - use recursive glob to find all agents.py files
-    for pattern in ["agents.py", "**/agents.py", "*/agents.py", "src/agents.py"]:
-        for file in Path(".").glob(pattern):
-            # Skip test files and __pycache__
-            if "test" in str(file).lower() or "__pycache__" in str(file):
-                continue
+    # Scan ALL Python files recursively
+    for file in Path(".").rglob("*.py"):
+        # Skip test files and __pycache__
+        if "test" in str(file).lower() or "__pycache__" in str(file):
+            continue
+        
+        # Skip if we've already processed this file (avoid duplicates)
+        file_key = str(file.resolve())
+        if file_key in processed_files:
+            continue
+        processed_files.add(file_key)
+        
+        # Parse file to find agents (simplified)
+        try:
+            content = file.read_text()
+        except Exception:
+            continue
+        
+        if "@client.agent" in content or "@agent" in content:
+            # Extract agent names - improved regex to handle multiline decorators
+            import re
+            # Match @client.agent( ... name="..." ... ) 
+            # Use a simpler approach: find the decorator start, then find name= within it
+            # This handles multiline decorators better
+            decorator_pattern = r'@client\.agent\s*\([^)]*?name\s*=\s*["\']([^"\']+)["\']'
+            matches = re.findall(decorator_pattern, content, re.DOTALL)
             
-            # Skip if we've already processed this file (avoid duplicates from multiple patterns)
-            file_key = str(file.resolve())
-            if file_key in processed_files:
-                continue
-            processed_files.add(file_key)
+            # If that doesn't work, try a more permissive pattern that handles nested parentheses
+            if not matches:
+                # Find all @client.agent decorators, then extract name from each
+                decorator_blocks = re.findall(r'@client\.agent\s*\((.*?)\)', content, re.DOTALL)
+                for block in decorator_blocks:
+                    name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', block)
+                    if name_match:
+                        matches.append(name_match.group(1))
+            for name in matches:
+                # Better detection of feature usage
+                uses_cortex = (
+                    "cortex=" in content or 
+                    "create_cortex" in content or 
+                    "from teleon.cortex" in content or
+                    "import cortex" in content
+                )
                 
-            # Parse file to find agents (simplified)
-            try:
-                content = file.read_text()
-            except Exception:
-                continue
+                uses_helix = (
+                    "helix=" in content or 
+                    "create_helix" in content or 
+                    "from teleon.helix" in content or
+                    "import helix" in content
+                )
                 
-            if "@client.agent" in content or "@agent" in content:
-                # Extract agent names - improved regex to handle multiline decorators
-                import re
-                # Match @client.agent( ... name="..." ... ) 
-                # Use a simpler approach: find the decorator start, then find name= within it
-                # This handles multiline decorators better
-                decorator_pattern = r'@client\.agent\s*\([^)]*?name\s*=\s*["\']([^"\']+)["\']'
-                matches = re.findall(decorator_pattern, content, re.DOTALL)
+                uses_sentinel = (
+                    "sentinel=" in content or 
+                    "create_sentinel" in content or 
+                    "from teleon.sentinel" in content or
+                    "import sentinel" in content
+                )
                 
-                # If that doesn't work, try a more permissive pattern that handles nested parentheses
-                if not matches:
-                    # Find all @client.agent decorators, then extract name from each
-                    decorator_blocks = re.findall(r'@client\.agent\s*\((.*?)\)', content, re.DOTALL)
-                    for block in decorator_blocks:
-                        name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', block)
-                        if name_match:
-                            matches.append(name_match.group(1))
-                for name in matches:
-                    # Better detection of feature usage
-                    uses_cortex = (
-                        "cortex=" in content or 
-                        "create_cortex" in content or 
-                        "from teleon.cortex" in content or
-                        "import cortex" in content
-                    )
-                    
-                    uses_helix = (
-                        "helix=" in content or 
-                        "create_helix" in content or 
-                        "from teleon.helix" in content or
-                        "import helix" in content
-                    )
-                    
-                    uses_sentinel = (
-                        "sentinel=" in content or 
-                        "create_sentinel" in content or 
-                        "from teleon.sentinel" in content or
-                        "import sentinel" in content
-                    )
-                    
-                    # Detect memory backend usage
-                    uses_chromadb = (
-                        "create_chroma_storage" in content or
-                        "enable_chromadb=True" in content or
-                        "from teleon.cortex.storage" in content or
-                        "ChromaDB" in content
-                    )
-                    
-                    uses_semantic_memory = (
-                        "cortex.semantic" in content or
-                        ".semantic.store" in content or
-                        ".semantic.search" in content
-                    )
-                    
-                    uses_redis = (
-                        "storage_backend=\"redis\"" in content or
-                        "storage_backend='redis'" in content
-                    )
-                    
-                    # Extract configurations if present
-                    helix_config = extract_helix_config(content)
-                    sentinel_config = extract_sentinel_config(content)
-                    cortex_config = extract_cortex_config(content)
-                    
-                    agents_found.append({
-                        "name": name,
-                        "file": str(file),
-                        "uses_cortex": uses_cortex,
-                        "uses_helix": uses_helix,
-                        "uses_sentinel": uses_sentinel,
-                        "uses_chromadb": uses_chromadb,
-                        "uses_semantic_memory": uses_semantic_memory,
-                        "uses_redis": uses_redis,
-                        "helix_config": helix_config,
-                        "sentinel_config": sentinel_config,
-                        "cortex_config": cortex_config
-                    })
+                # Detect memory backend usage
+                uses_chromadb = (
+                    "create_chroma_storage" in content or
+                    "enable_chromadb=True" in content or
+                    "from teleon.cortex.storage" in content or
+                    "ChromaDB" in content
+                )
+                
+                uses_semantic_memory = (
+                    "cortex.semantic" in content or
+                    ".semantic.store" in content or
+                    ".semantic.search" in content
+                )
+                
+                uses_redis = (
+                    "storage_backend=\"redis\"" in content or
+                    "storage_backend='redis'" in content
+                )
+                
+                # Extract configurations if present
+                helix_config = extract_helix_config(content)
+                sentinel_config = extract_sentinel_config(content)
+                cortex_config = extract_cortex_config(content)
+                
+                agents_found.append({
+                    "name": name,
+                    "file": str(file),
+                    "uses_cortex": uses_cortex,
+                    "uses_helix": uses_helix,
+                    "uses_sentinel": uses_sentinel,
+                    "uses_chromadb": uses_chromadb,
+                    "uses_semantic_memory": uses_semantic_memory,
+                    "uses_redis": uses_redis,
+                    "helix_config": helix_config,
+                    "sentinel_config": sentinel_config,
+                    "cortex_config": cortex_config
+                })
     
     return agents_found
 

@@ -7,7 +7,7 @@ Enhanced version with real-time WebSocket updates.
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
-from teleon.dashboard.api import create_dashboard_app, _agents_db, _metrics_db
+from teleon.dashboard.api import create_dashboard_app
 from teleon.dashboard.websocket import websocket_endpoint, get_connection_manager
 
 

@@ -300,3 +300,4 @@ class SentinelAuditLogger:
                 self.violation_counts.clear()
                 self.agent_violations.clear()
                 return count
+

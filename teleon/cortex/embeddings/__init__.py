@@ -1,95 +1,68 @@
 """
-Embedding engines for Cortex semantic memory.
+Cortex Embedding Service.
 
-Provides multiple embedding backends:
-- FastEmbed: Fast, local embeddings (recommended for production)
-- OpenAI: Cloud-based embeddings (requires API key)
-- Custom: Bring your own embedding function
+Provides tier-based embedding model selection:
+- Free tier: FastEmbed (local, free, 384 dims padded to 1536)
+- Paid tier: OpenAI (API, better quality, 1536 dims)
+
+Example:
+    ```python
+    from teleon.cortex.embeddings import get_embedding_service, EmbeddingService
+
+    # Get service based on tier
+    service = get_embedding_service(is_paid_tier=False)
+
+    # Generate embedding
+    embedding = await service.embed("Hello, world!")
+
+    # Batch embeddings
+    embeddings = await service.embed_batch(["Hello", "World"])
+    ```
 """
 
-from typing import Optional, Callable, List
+from teleon.cortex.embeddings.base import (
+    EmbeddingModel,
+    EMBEDDING_DIMENSION,
+    normalize_embedding,
+)
+from teleon.cortex.embeddings.service import (
+    EmbeddingService,
+    EmbeddingCache,
+    get_embedding_service,
+)
 
+# Optional embedding models
 try:
-    from teleon.cortex.embeddings.fastembed_engine import (
-        FastEmbedEngine,
-        create_fastembed_function
-    )
+    from teleon.cortex.embeddings.fastembed import FastEmbedModel
     FASTEMBED_AVAILABLE = True
 except ImportError:
     FASTEMBED_AVAILABLE = False
-    FastEmbedEngine = None
-    create_fastembed_function = None
+    FastEmbedModel = None
+
+try:
+    from teleon.cortex.embeddings.openai import OpenAIEmbedModel
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAIEmbedModel = None
 
 
 __all__ = [
-    "FastEmbedEngine",
-    "create_fastembed_function",
-    "create_embedding_function",
+    # Base
+    "EmbeddingModel",
+    "EMBEDDING_DIMENSION",
+    "normalize_embedding",
+
+    # Service
+    "EmbeddingService",
+    "EmbeddingCache",
+    "get_embedding_service",
+
+    # Models
+    "FastEmbedModel",
+    "OpenAIEmbedModel",
+
+    # Availability flags
     "FASTEMBED_AVAILABLE",
+    "OPENAI_AVAILABLE",
 ]
-
-
-def create_embedding_function(
-    backend: str = "fastembed",
-    model: Optional[str] = None,
-    api_key: Optional[str] = None
-) -> Callable[[str], List[float]]:
-    """
-    Create an embedding function.
-    
-    Args:
-        backend: Embedding backend ("fastembed", "openai", "custom")
-        model: Model name (backend-specific)
-        api_key: API key (for cloud backends)
-    
-    Returns:
-        Callable that generates embeddings
-    
-    Examples:
-        >>> # Use FastEmbed (recommended, free)
-        >>> embed_fn = create_embedding_function("fastembed")
-        
-        >>> # Use OpenAI
-        >>> embed_fn = create_embedding_function(
-        ...     "openai",
-        ...     model="text-embedding-3-small",
-        ...     api_key="sk-..."
-        ... )
-    """
-    if backend == "fastembed":
-        if not FASTEMBED_AVAILABLE:
-            raise ImportError(
-                "FastEmbed not available. Install with: pip install fastembed"
-            )
-        model = model or "BAAI/bge-small-en-v1.5"
-        return create_fastembed_function(model)
-    
-    elif backend == "openai":
-        if not api_key:
-            raise ValueError("OpenAI backend requires api_key parameter")
-        
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "OpenAI not available. Install with: pip install openai"
-            )
-        
-        client = OpenAI(api_key=api_key)
-        model = model or "text-embedding-3-small"
-        
-        def openai_embed(text: str) -> List[float]:
-            response = client.embeddings.create(
-                model=model,
-                input=text
-            )
-            return response.data[0].embedding
-        
-        return openai_embed
-    
-    else:
-        raise ValueError(
-            f"Unknown embedding backend: {backend}. "
-            f"Supported: fastembed, openai"
-        )
-

@@ -1,711 +1,544 @@
 """
-Redis Storage Backend for Cortex.
-
-Production-ready, distributed storage using Redis.
-Suitable for multi-instance deployments with persistence and high availability.
+Redis storage backend with RediSearch for vector similarity.
 """
 
+from typing import Optional, Any, List, Dict
+from datetime import datetime, timezone
 import json
-import fnmatch
-from typing import Any, Dict, List, Optional
-from datetime import datetime, timedelta
-from pydantic import BaseModel
+import logging
+import uuid
+import numpy as np
+
+from teleon.cortex.storage.base import StorageBackend, StorageError
+from teleon.cortex.entry import Entry
+from teleon.cortex.embeddings.base import EMBEDDING_DIMENSION
+
+logger = logging.getLogger("teleon.cortex.storage.redis")
 
 try:
     import redis.asyncio as aioredis
     from redis.asyncio import Redis
-    from redis.exceptions import RedisError, ConnectionError as RedisConnectionError
+    from redis.commands.search.field import VectorField, TextField, TagField, NumericField
+    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+    from redis.commands.search.query import Query
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+    aioredis = None
     Redis = None
-    RedisError = Exception
-    RedisConnectionError = Exception
-
-from teleon.cortex.storage.base import (
-    StorageBackend,
-    StorageConfig,
-    StorageError,
-    ConnectionError,
-    SerializationError,
-)
 
 
-class RedisConfig(StorageConfig):
-    """Configuration for Redis storage."""
-    
-    host: str = "localhost"
-    port: int = 6379
-    db: int = 0
-    password: Optional[str] = None
-    key_prefix: str = "teleon:cortex:"
-    connection_pool_size: int = 10
-    socket_timeout: int = 5
-    socket_connect_timeout: int = 5
-    retry_on_timeout: bool = True
-    decode_responses: bool = False  # We handle JSON serialization
-
-
-class RedisStorage(StorageBackend):
+class RedisBackend(StorageBackend):
     """
-    Redis storage backend for distributed deployments.
-    
-    Features:
-    - Distributed storage across multiple instances
-    - Native TTL support
-    - High performance
-    - Persistence options
-    - High availability with Redis Cluster/Sentinel
-    - Connection pooling
-    - Automatic reconnection
-    
-    Requirements:
-    - redis[asyncio] package
-    - Redis server 5.0+
-    
+    Redis storage backend with RediSearch for vector similarity search.
+
+    Requires:
+        - redis[asyncio]: pip install redis[asyncio]
+        - Redis Stack (includes RediSearch) or RediSearch module
+
     Example:
-        ```python
-        storage = RedisStorage(RedisConfig(
+        backend = RedisBackend(
             host="localhost",
             port=6379,
-            db=0,
-            password="secret",
-            key_prefix="myapp:"
-        ))
-        await storage.initialize()
-        
-        # Store with TTL
-        await storage.set("session:123", {"user_id": 456}, ttl=3600)
-        
-        # Retrieve
-        session = await storage.get("session:123")
-        
-        # Batch operations
-        items = await storage.get_many(["session:123", "session:456"])
-        ```
+            password="secret"
+        )
     """
-    
-    def __init__(self, config: Optional[RedisConfig] = None):
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: Optional[str] = None,
+        key_prefix: str = "teleon:memory:",
+        connection_string: Optional[str] = None
+    ):
         """
-        Initialize Redis storage.
-        
+        Initialize Redis backend.
+
         Args:
-            config: Redis configuration
-        
-        Raises:
-            ImportError: If redis package not installed
+            host: Redis host
+            port: Redis port
+            db: Redis database number
+            password: Redis password
+            key_prefix: Prefix for all keys
+            connection_string: Full connection string (overrides other params)
         """
         if not REDIS_AVAILABLE:
             raise ImportError(
-                "redis package is required for RedisStorage. "
-                "Install with: pip install 'redis[asyncio]'"
-            )
-        
-        super().__init__(config)
-        self.redis_config: RedisConfig = config or RedisConfig()
-        self._client: Optional[Redis] = None
-        self._connection_retries = 0
-        self._max_retries = 3
-    
-    async def initialize(self) -> None:
-        """Initialize Redis connection."""
-        await super().initialize()
-        
-        try:
-            self._client = await aioredis.from_url(
-                f"redis://{self.redis_config.host}:{self.redis_config.port}/{self.redis_config.db}",
-                password=self.redis_config.password,
-                encoding="utf-8",
-                decode_responses=self.redis_config.decode_responses,
-                socket_timeout=self.redis_config.socket_timeout,
-                socket_connect_timeout=self.redis_config.socket_connect_timeout,
-                retry_on_timeout=self.redis_config.retry_on_timeout,
-                max_connections=self.redis_config.connection_pool_size,
-            )
-            
-            # Test connection
-            await self._client.ping()
-            
-        except RedisConnectionError as e:
-            raise ConnectionError(
-                f"Failed to connect to Redis: {str(e)}",
-                operation="initialize"
-            )
-        except Exception as e:
-            raise StorageError(
-                f"Failed to initialize Redis storage: {str(e)}",
-                operation="initialize"
-            )
-    
-    async def get_statistics(self) -> Dict[str, Any]:
-        """
-        Get detailed storage statistics from Redis.
-        
-        Returns:
-            Dictionary with storage statistics
-        """
-        if not self._client:
-            return {
-                "total_keys": 0,
-                "total_operations": 0,
-                "get_operations": 0,
-                "set_operations": 0,
-                "delete_operations": 0,
-                "hit_rate": "0%"
-            }
-        
-        try:
-            # Get key count from Redis
-            pattern = f"{self.redis_config.key_prefix}*"
-            keys = await self._client.keys(pattern)
-            total_keys = len(keys)
-            
-            # Get Redis info for additional stats
-            info = await self._client.info("stats")
-            
-            stats = {
-                "total_keys": total_keys,
-                "redis_uptime_seconds": info.get("uptime_in_seconds", 0),
-                "total_commands_processed": info.get("total_commands_processed", 0),
-                "instantaneous_ops_per_sec": info.get("instantaneous_ops_per_sec", 0),
-            }
-            
-            # Add metrics if available
-            if self.metrics:
-                stats.update({
-                    "total_operations": self.metrics.total_operations,
-                    "get_operations": self.metrics.get_operations,
-                    "set_operations": self.metrics.set_operations,
-                    "delete_operations": self.metrics.delete_operations,
-                    "hit_rate": f"{self.metrics.hit_rate():.2f}%",
-                })
-            
-            return stats
-            
-        except RedisError as e:
-            # Return basic stats on error
-            return {
-                "total_keys": 0,
-                "error": str(e),
-                "total_operations": self.metrics.total_operations if self.metrics else 0,
-            }
-    
-    async def _ensure_connected(self) -> None:
-        """
-        Ensure Redis connection is alive, reconnect if needed.
-        
-        Raises:
-            ConnectionError: If connection cannot be established
-        """
-        if not self._client:
-            await self.initialize()
-            return
-        
-        try:
-            await asyncio.wait_for(self._client.ping(), timeout=2.0)
-            self._connection_retries = 0  # Reset on success
-        except (RedisConnectionError, asyncio.TimeoutError, AttributeError) as e:
-            logger.warning(f"Redis connection lost, reconnecting... ({e})")
-            try:
-                await self._client.close()
-            except Exception:
-                pass
-            
-            self._client = None
-            self._connection_retries += 1
-            
-            if self._connection_retries <= self._max_retries:
-                await self.initialize()
-            else:
-                raise ConnectionError(
-                    f"Failed to reconnect to Redis after {self._max_retries} attempts",
-                    operation="reconnect"
-                )
-    
-    async def shutdown(self) -> None:
-        """Shutdown Redis connection."""
-        if self._client:
-            try:
-                await self._client.close()
-            except Exception as e:
-                logger.warning(f"Error closing Redis connection: {e}")
-            self._client = None
-        
-        await super().shutdown()
-    
-    def _make_key(self, key: str) -> str:
-        """Add prefix to key."""
-        return f"{self.redis_config.key_prefix}{key}"
-    
-    def _strip_prefix(self, key: str) -> str:
-        """Remove prefix from key."""
-        prefix = self.redis_config.key_prefix
-        if key.startswith(prefix):
-            return key[len(prefix):]
-        return key
-    
-    def _serialize(self, value: Any) -> str:
-        """Serialize value to JSON with comprehensive error handling."""
-        def json_encoder(obj):
-            """Custom JSON encoder for datetime and Pydantic models."""
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            elif isinstance(obj, BaseModel):
-                try:
-                    return obj.model_dump(mode='json', exclude_none=True)
-                except Exception:
-                    # Fallback to dict() if model_dump fails
-                    try:
-                        return obj.dict() if hasattr(obj, 'dict') else str(obj)
-                    except Exception:
-                        return str(obj)
-            elif hasattr(obj, '__dict__'):
-                # Handle custom objects
-                try:
-                    return {k: v for k, v in obj.__dict__.items() 
-                           if not k.startswith('_')}
-                except Exception:
-                    return str(obj)
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-        
-        try:
-            return json.dumps(value, default=json_encoder, ensure_ascii=False)
-        except (TypeError, ValueError) as e:
-            raise SerializationError(
-                f"Failed to serialize value of type {type(value).__name__}: {str(e)}",
-                operation="serialize"
-            )
-    
-    def _deserialize(self, data: str) -> Any:
-        """Deserialize JSON to value."""
-        try:
-            return json.loads(data)
-        except (TypeError, ValueError) as e:
-            raise SerializationError(
-                f"Failed to deserialize value: {str(e)}",
-                operation="deserialize"
-            )
-    
-    async def set(
-        self,
-        key: str,
-        value: Any,
-        ttl: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> bool:
-        """
-        Store a value in Redis with automatic reconnection.
-        
-        Args:
-            key: Storage key
-            value: Value to store
-            ttl: Time-to-live in seconds
-            metadata: Optional metadata (stored separately)
-        
-        Returns:
-            True if stored successfully
-        """
-        await self._ensure_connected()
-        
-        try:
-            redis_key = self._make_key(key)
-            serialized = self._serialize(value)
-            
-            # Use default TTL if not specified
-            effective_ttl = ttl or self.redis_config.default_ttl
-            
-            # Store value
-            if effective_ttl:
-                await self._client.setex(
-                    redis_key,
-                    effective_ttl,
-                    serialized
-                )
-            else:
-                await self._client.set(redis_key, serialized)
-            
-            # Store metadata if provided
-            if metadata:
-                metadata_key = f"{redis_key}:metadata"
-                metadata_serialized = self._serialize(metadata)
-                if effective_ttl:
-                    await self._client.setex(
-                        metadata_key,
-                        effective_ttl,
-                        metadata_serialized
-                    )
-                else:
-                    await self._client.set(metadata_key, metadata_serialized)
-            
-            # Update metrics
-            self._update_metrics("set")
-            
-            return True
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="set",
-                key=key
-            )
-        except Exception as e:
-            if isinstance(e, (StorageError, SerializationError)):
-                raise
-            raise StorageError(
-                f"Failed to store value: {str(e)}",
-                operation="set",
-                key=key
-            )
-    
-    async def get(
-        self,
-        key: str,
-        default: Optional[Any] = None
-    ) -> Optional[Any]:
-        """
-        Retrieve a value from Redis with automatic reconnection.
-        
-        Args:
-            key: Storage key
-            default: Default value if not found
-        
-        Returns:
-            Stored value or default
-        """
-        await self._ensure_connected()
-        
-        try:
-            redis_key = self._make_key(key)
-            data = await self._client.get(redis_key)
-            
-            if data is None:
-                self._update_metrics("get", hit=False)
-                return default
-            
-            # Deserialize value
-            value = self._deserialize(data)
-            
-            self._update_metrics("get", hit=True)
-            return value
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="get",
-                key=key
-            )
-        except Exception as e:
-            if isinstance(e, (StorageError, SerializationError)):
-                raise
-            raise StorageError(
-                f"Failed to retrieve value: {str(e)}",
-                operation="get",
-                key=key
-            )
-    
-    async def delete(self, key: str) -> bool:
-        """
-        Delete a value from Redis with automatic reconnection.
-        
-        Args:
-            key: Storage key
-        
-        Returns:
-            True if deleted, False if not found
-        """
-        await self._ensure_connected()
-        
-        try:
-            redis_key = self._make_key(key)
-            metadata_key = f"{redis_key}:metadata"
-            
-            # Delete both value and metadata
-            deleted = await self._client.delete(redis_key, metadata_key)
-            
-            self._update_metrics("delete")
-            return deleted > 0
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="delete",
-                key=key
-            )
-    
-    async def exists(self, key: str) -> bool:
-        """
-        Check if a key exists in Redis with automatic reconnection.
-        
-        Args:
-            key: Storage key
-        
-        Returns:
-            True if key exists
-        """
-        await self._ensure_connected()
-        
-        try:
-            redis_key = self._make_key(key)
-            exists = await self._client.exists(redis_key)
-            return exists > 0
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="exists",
-                key=key
-            )
-    
-    async def list_keys(
-        self,
-        pattern: str = "*",
-        limit: Optional[int] = None
-    ) -> List[str]:
-        """
-        List keys matching a pattern with automatic reconnection.
-        
-        Args:
-            pattern: Wildcard pattern
-            limit: Maximum number of keys
-        
-        Returns:
-            List of matching keys (without prefix)
-        """
-        await self._ensure_connected()
-        
-        try:
-            redis_pattern = self._make_key(pattern)
-            
-            # Use SCAN for better performance
-            keys = []
-            cursor = 0
-            while True:
-                cursor, batch = await self._client.scan(
-                    cursor,
-                    match=redis_pattern,
-                    count=100
-                )
-                
-                # Filter out metadata keys
-                batch_keys = [
-                    self._strip_prefix(k.decode() if isinstance(k, bytes) else k)
-                    for k in batch
-                    if not k.endswith(b":metadata") and not k.decode().endswith(":metadata")
-                ]
-                keys.extend(batch_keys)
-                
-                if cursor == 0:
-                    break
-                if limit and len(keys) >= limit:
-                    keys = keys[:limit]
-                    break
-            
-            return keys
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="list_keys"
-            )
-    
-    async def clear(self, pattern: str = "*") -> int:
-        """
-        Clear keys matching a pattern.
-        
-        Args:
-            pattern: Wildcard pattern
-        
-        Returns:
-            Number of keys deleted
-        """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="clear")
-        
-        try:
-            keys = await self.list_keys(pattern)
-            if not keys:
-                return 0
-            
-            # Delete keys in batches
-            redis_keys = [self._make_key(k) for k in keys]
-            deleted = await self._client.delete(*redis_keys)
-            
-            # Also delete associated metadata
-            metadata_keys = [f"{k}:metadata" for k in redis_keys]
-            await self._client.delete(*metadata_keys)
-            
-            return deleted
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="clear"
-            )
-    
-    async def get_ttl(self, key: str) -> Optional[int]:
-        """
-        Get remaining TTL for a key.
-        
-        Args:
-            key: Storage key
-        
-        Returns:
-            Remaining TTL in seconds, None if no TTL
-        """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="get_ttl", key=key)
-        
-        try:
-            redis_key = self._make_key(key)
-            ttl = await self._client.ttl(redis_key)
-            
-            # Redis returns -1 if key exists but has no TTL
-            # Returns -2 if key doesn't exist
-            if ttl == -2:
-                return None
-            if ttl == -1:
-                return None
-            
-            return max(0, ttl)
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="get_ttl",
-                key=key
-            )
-    
-    async def set_ttl(self, key: str, ttl: int) -> bool:
-        """
-        Set TTL for an existing key.
-        
-        Args:
-            key: Storage key
-            ttl: Time-to-live in seconds
-        
-        Returns:
-            True if TTL was set
-        """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="set_ttl", key=key)
-        
-        try:
-            redis_key = self._make_key(key)
-            success = await self._client.expire(redis_key, ttl)
-            
-            # Also set TTL for metadata if exists
-            metadata_key = f"{redis_key}:metadata"
-            if await self._client.exists(metadata_key):
-                await self._client.expire(metadata_key, ttl)
-            
-            return bool(success)
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="set_ttl",
-                key=key
-            )
-    
-    async def get_many(self, keys: List[str]) -> Dict[str, Any]:
-        """
-        Get multiple values efficiently using MGET with automatic reconnection.
-        
-        Args:
-            keys: List of storage keys
-        
-        Returns:
-            Dictionary of key-value pairs
-        """
-        await self._ensure_connected()
-        
-        if not keys:
-            return {}
-        
-        try:
-            redis_keys = [self._make_key(k) for k in keys]
-            values = await self._client.mget(redis_keys)
-            
-            results = {}
-            for key, value in zip(keys, values):
-                if value is not None:
-                    results[key] = self._deserialize(value)
-            
-            return results
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="get_many"
-            )
-    
-    async def set_many(
-        self,
-        items: Dict[str, Any],
-        ttl: Optional[int] = None
-    ) -> int:
-        """
-        Set multiple values efficiently using pipeline with automatic reconnection.
-        
-        Args:
-            items: Dictionary of key-value pairs
-            ttl: Time-to-live for all items
-        
-        Returns:
-            Number of items stored
-        """
-        await self._ensure_connected()
-        
-        if not items:
-            return 0
-        
-        try:
-            pipeline = self._client.pipeline()
-            
-            effective_ttl = ttl or self.redis_config.default_ttl
-            
-            for key, value in items.items():
-                redis_key = self._make_key(key)
-                serialized = self._serialize(value)
-                
-                if effective_ttl:
-                    pipeline.setex(redis_key, effective_ttl, serialized)
-                else:
-                    pipeline.set(redis_key, serialized)
-            
-            await pipeline.execute()
-            return len(items)
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="set_many"
-            )
-    
-    async def delete_many(self, keys: List[str]) -> int:
-        """
-        Delete multiple keys efficiently.
-        
-        Args:
-            keys: List of storage keys
-        
-        Returns:
-            Number of keys deleted
-        """
-        if not self._client:
-            raise StorageError("Redis client not initialized", operation="delete_many")
-        
-        if not keys:
-            return 0
-        
-        try:
-            redis_keys = [self._make_key(k) for k in keys]
-            deleted = await self._client.delete(*redis_keys)
-            return deleted
-            
-        except RedisError as e:
-            raise StorageError(
-                f"Redis error: {str(e)}",
-                operation="delete_many"
+                "redis not available. Install with: pip install redis[asyncio]"
             )
 
+        self._host = host
+        self._port = port
+        self._db = db
+        self._password = password
+        self._key_prefix = key_prefix
+        self._connection_string = connection_string
+
+        self._client: Optional[Redis] = None
+        self._indexes_created: set = set()
+
+        logger.info(f"RedisBackend initialized for {host}:{port}")
+
+    async def _get_client(self) -> Redis:
+        """Get or create Redis client."""
+        if self._client is None:
+            if self._connection_string:
+                self._client = await aioredis.from_url(
+                    self._connection_string,
+                    decode_responses=False
+                )
+            else:
+                self._client = await aioredis.from_url(
+                    f"redis://{self._host}:{self._port}/{self._db}",
+                    password=self._password,
+                    decode_responses=False
+                )
+
+            # Test connection
+            await self._client.ping()
+
+        return self._client
+
+    async def _ensure_index(self, memory_name: str) -> None:
+        """Ensure RediSearch index exists for memory."""
+        if memory_name in self._indexes_created:
+            return
+
+        client = await self._get_client()
+        index_name = f"{self._key_prefix}{memory_name}:idx"
+
+        try:
+            # Check if index exists
+            await client.ft(index_name).info()
+            self._indexes_created.add(memory_name)
+            return
+        except Exception:
+            pass  # Index doesn't exist, create it
+
+        try:
+            # Define schema
+            schema = [
+                TextField("content"),
+                TagField("memory_name"),
+                NumericField("created_at", sortable=True),
+                NumericField("expires_at"),
+                TextField("fields_json"),
+                VectorField(
+                    "embedding",
+                    "HNSW",
+                    {
+                        "TYPE": "FLOAT32",
+                        "DIM": EMBEDDING_DIMENSION,
+                        "DISTANCE_METRIC": "COSINE"
+                    }
+                )
+            ]
+
+            # Create index
+            await client.ft(index_name).create_index(
+                fields=schema,
+                definition=IndexDefinition(
+                    prefix=[f"{self._key_prefix}{memory_name}:"],
+                    index_type=IndexType.HASH
+                )
+            )
+
+            self._indexes_created.add(memory_name)
+            logger.info(f"Created RediSearch index for {memory_name}")
+
+        except Exception as e:
+            logger.warning(f"Could not create RediSearch index: {e}")
+
+    def _make_key(self, memory_name: str, entry_id: str) -> str:
+        """Generate Redis key for entry."""
+        return f"{self._key_prefix}{memory_name}:{entry_id}"
+
+    def _vector_to_bytes(self, embedding: List[float]) -> bytes:
+        """Convert embedding to bytes for Redis."""
+        return np.array(embedding, dtype=np.float32).tobytes()
+
+    def _bytes_to_vector(self, data: bytes) -> List[float]:
+        """Convert bytes back to embedding."""
+        return np.frombuffer(data, dtype=np.float32).tolist()
+
+    async def store(
+        self,
+        memory_name: str,
+        content: str,
+        embedding: List[float],
+        fields: Dict[str, Any],
+        expires_at: Optional[datetime] = None,
+        upsert: bool = False
+    ) -> str:
+        """Store entry in Redis."""
+        client = await self._get_client()
+        await self._ensure_index(memory_name)
+
+        if upsert and fields:
+            # Try to find existing entry with matching fields
+            existing = await self._find_by_fields(memory_name, fields)
+            if existing:
+                entry_id = existing.id
+                key = self._make_key(memory_name, entry_id)
+
+                # Update existing entry
+                now = datetime.now(timezone.utc)
+                mapping = {
+                    "content": content,
+                    "embedding": self._vector_to_bytes(embedding),
+                    "fields_json": json.dumps(fields),
+                    "updated_at": now.timestamp(),
+                }
+                if expires_at:
+                    mapping["expires_at"] = expires_at.timestamp()
+
+                await client.hset(key, mapping=mapping)
+
+                # Update TTL if needed
+                if expires_at:
+                    ttl = int((expires_at - now).total_seconds())
+                    if ttl > 0:
+                        await client.expire(key, ttl)
+
+                logger.debug(f"Updated entry {entry_id}")
+                return entry_id
+
+        # Create new entry
+        entry_id = str(uuid.uuid4())
+        key = self._make_key(memory_name, entry_id)
+        now = datetime.now(timezone.utc)
+
+        mapping = {
+            "id": entry_id,
+            "memory_name": memory_name,
+            "content": content,
+            "embedding": self._vector_to_bytes(embedding),
+            "fields_json": json.dumps(fields),
+            "created_at": now.timestamp(),
+            "updated_at": now.timestamp(),
+        }
+
+        if expires_at:
+            mapping["expires_at"] = expires_at.timestamp()
+
+        await client.hset(key, mapping=mapping)
+
+        # Set TTL if expires_at is set
+        if expires_at:
+            ttl = int((expires_at - now).total_seconds())
+            if ttl > 0:
+                await client.expire(key, ttl)
+
+        logger.debug(f"Stored entry {entry_id}")
+        return entry_id
+
+    async def _find_by_fields(
+        self,
+        memory_name: str,
+        fields: Dict[str, Any]
+    ) -> Optional[Entry]:
+        """Find entry by exact field match."""
+        # Use get() with filter to find matching entry
+        entries = await self.get(memory_name, fields, limit=1)
+        return entries[0] if entries else None
+
+    async def search(
+        self,
+        memory_name: str,
+        query_embedding: Optional[List[float]],
+        filter: Dict[str, Any],
+        limit: int = 10
+    ) -> List[Entry]:
+        """Semantic search with RediSearch."""
+        client = await self._get_client()
+        await self._ensure_index(memory_name)
+
+        index_name = f"{self._key_prefix}{memory_name}:idx"
+
+        try:
+            if query_embedding:
+                # Vector similarity search
+                query_vector = self._vector_to_bytes(query_embedding)
+
+                # Build query with filter
+                query_str = f"@memory_name:{{{memory_name}}}"
+
+                # Add field filters
+                for key, value in filter.items():
+                    if isinstance(value, list):
+                        values = "|".join(str(v) for v in value)
+                        query_str += f" @fields_json:*{values}*"
+                    else:
+                        query_str += f" @fields_json:*{value}*"
+
+                query_str += f"=>[KNN {limit} @embedding $vec AS score]"
+
+                query = (
+                    Query(query_str)
+                    .sort_by("score")
+                    .return_fields("id", "content", "fields_json", "created_at", "updated_at", "expires_at", "score")
+                    .dialect(2)
+                )
+
+                results = await client.ft(index_name).search(
+                    query,
+                    query_params={"vec": query_vector}
+                )
+
+                entries = []
+                for doc in results.docs:
+                    entry = self._doc_to_entry(doc, with_score=True)
+                    if entry:
+                        entries.append(entry)
+
+                return entries
+
+            else:
+                # Filter only, get by pattern and filter in memory
+                return await self.get(memory_name, filter, limit)
+
+        except Exception as e:
+            logger.warning(f"RediSearch query failed, falling back to scan: {e}")
+            return await self.get(memory_name, filter, limit)
+
+    async def get(
+        self,
+        memory_name: str,
+        filter: Dict[str, Any],
+        limit: int = 10
+    ) -> List[Entry]:
+        """Get entries by filter using SCAN."""
+        client = await self._get_client()
+
+        pattern = f"{self._key_prefix}{memory_name}:*"
+        entries = []
+        now = datetime.now(timezone.utc).timestamp()
+
+        cursor = 0
+        while True:
+            cursor, keys = await client.scan(cursor, match=pattern, count=100)
+
+            for key in keys:
+                # Skip index keys
+                if key.endswith(b":idx") or b":idx:" in key:
+                    continue
+
+                data = await client.hgetall(key)
+                if not data:
+                    continue
+
+                # Check expiration
+                expires_at = data.get(b"expires_at")
+                if expires_at and float(expires_at) <= now:
+                    continue
+
+                # Parse fields and check filter
+                fields_json = data.get(b"fields_json", b"{}")
+                try:
+                    fields = json.loads(fields_json)
+                except:
+                    fields = {}
+
+                # Check filter match
+                if not self._matches_filter(fields, filter):
+                    continue
+
+                entry = self._hash_to_entry(data)
+                if entry:
+                    entries.append(entry)
+
+                if len(entries) >= limit:
+                    break
+
+            if cursor == 0 or len(entries) >= limit:
+                break
+
+        # Sort by created_at DESC
+        entries.sort(key=lambda e: e.created_at.timestamp(), reverse=True)
+
+        return entries[:limit]
+
+    def _matches_filter(self, fields: Dict[str, Any], filter: Dict[str, Any]) -> bool:
+        """Check if fields match filter."""
+        for key, value in filter.items():
+            field_value = fields.get(key)
+            if isinstance(value, list):
+                if field_value not in value:
+                    return False
+            else:
+                if str(field_value) != str(value):
+                    return False
+        return True
+
+    async def update(
+        self,
+        memory_name: str,
+        filter: Dict[str, Any],
+        content: Optional[str] = None,
+        embedding: Optional[List[float]] = None,
+        fields: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Update entries matching filter."""
+        if not filter:
+            logger.warning("Update called without filter - skipping for safety")
+            return 0
+
+        client = await self._get_client()
+
+        # Find matching entries
+        entries = await self.get(memory_name, filter, limit=1000)
+
+        count = 0
+        for entry in entries:
+            key = self._make_key(memory_name, entry.id)
+
+            mapping = {
+                "updated_at": datetime.now(timezone.utc).timestamp()
+            }
+
+            if content is not None:
+                mapping["content"] = content
+
+            if embedding is not None:
+                mapping["embedding"] = self._vector_to_bytes(embedding)
+
+            if fields is not None:
+                # Merge with existing fields
+                existing_fields = entry.fields.copy()
+                existing_fields.update(fields)
+                mapping["fields_json"] = json.dumps(existing_fields)
+
+            await client.hset(key, mapping=mapping)
+            count += 1
+
+        logger.debug(f"Updated {count} entries")
+        return count
+
+    async def delete(
+        self,
+        memory_name: str,
+        filter: Dict[str, Any]
+    ) -> int:
+        """Delete entries matching filter."""
+        if not filter:
+            logger.warning("Delete called without filter - skipping for safety")
+            return 0
+
+        client = await self._get_client()
+
+        # Find matching entries
+        entries = await self.get(memory_name, filter, limit=10000)
+
+        count = 0
+        for entry in entries:
+            key = self._make_key(memory_name, entry.id)
+            result = await client.delete(key)
+            if result:
+                count += 1
+
+        logger.debug(f"Deleted {count} entries")
+        return count
+
+    async def count(
+        self,
+        memory_name: str,
+        filter: Dict[str, Any]
+    ) -> int:
+        """Count entries matching filter."""
+        entries = await self.get(memory_name, filter, limit=100000)
+        return len(entries)
+
+    async def cleanup_expired(self) -> int:
+        """Remove expired entries (Redis handles this with TTL)."""
+        # Redis automatically removes expired keys
+        return 0
+
+    async def close(self) -> None:
+        """Close Redis connection."""
+        if self._client:
+            await self._client.close()
+            self._client = None
+            logger.info("Redis connection closed")
+
+    def _hash_to_entry(self, data: Dict[bytes, bytes]) -> Optional[Entry]:
+        """Convert Redis hash to Entry."""
+        try:
+            entry_id = data.get(b"id", b"").decode()
+            if not entry_id:
+                return None
+
+            content = data.get(b"content", b"").decode()
+
+            fields_json = data.get(b"fields_json", b"{}")
+            try:
+                fields = json.loads(fields_json)
+            except:
+                fields = {}
+
+            created_at = float(data.get(b"created_at", 0))
+            updated_at = float(data.get(b"updated_at", created_at))
+
+            expires_at = data.get(b"expires_at")
+            expires_dt = None
+            if expires_at:
+                expires_dt = datetime.fromtimestamp(float(expires_at), tz=timezone.utc)
+
+            return Entry(
+                id=entry_id,
+                content=content,
+                fields=fields,
+                created_at=datetime.fromtimestamp(created_at, tz=timezone.utc),
+                updated_at=datetime.fromtimestamp(updated_at, tz=timezone.utc),
+                expires_at=expires_dt,
+                score=None
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse entry: {e}")
+            return None
+
+    def _doc_to_entry(self, doc: Any, with_score: bool = False) -> Optional[Entry]:
+        """Convert RediSearch document to Entry."""
+        try:
+            entry_id = getattr(doc, "id", "").replace(f"{self._key_prefix}", "").split(":")[-1]
+
+            content = getattr(doc, "content", "")
+            if isinstance(content, bytes):
+                content = content.decode()
+
+            fields_json = getattr(doc, "fields_json", "{}")
+            if isinstance(fields_json, bytes):
+                fields_json = fields_json.decode()
+            try:
+                fields = json.loads(fields_json)
+            except:
+                fields = {}
+
+            created_at = float(getattr(doc, "created_at", 0))
+            updated_at = float(getattr(doc, "updated_at", created_at))
+
+            expires_at = getattr(doc, "expires_at", None)
+            expires_dt = None
+            if expires_at:
+                expires_dt = datetime.fromtimestamp(float(expires_at), tz=timezone.utc)
+
+            score = None
+            if with_score:
+                score_raw = getattr(doc, "score", None)
+                if score_raw is not None:
+                    # RediSearch returns distance, convert to similarity
+                    score = 1 - float(score_raw)
+
+            return Entry(
+                id=entry_id,
+                content=content,
+                fields=fields,
+                created_at=datetime.fromtimestamp(created_at, tz=timezone.utc),
+                updated_at=datetime.fromtimestamp(updated_at, tz=timezone.utc),
+                expires_at=expires_dt,
+                score=score
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse document: {e}")
+            return None

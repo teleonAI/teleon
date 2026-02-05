@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
 try:
@@ -43,14 +43,14 @@ logger = logging.getLogger("teleon.dev_server")
 class AgentRequest(BaseModel):
     """Request to an agent (shared endpoint)."""
     agent_name: str
-    input: str
+    input: Any  # Can be string or dict with agent parameters
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 500
 
 
 class IndividualAgentRequest(BaseModel):
     """Request to an individual agent endpoint."""
-    input: str
+    input: Any  # Can be string or dict with agent parameters
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
 
@@ -83,7 +83,7 @@ class APIKeyResponse(BaseModel):
 class PlaygroundRequest(BaseModel):
     """Request from playground."""
     agent_id: str
-    input: str
+    input: Any  # Can be string or dict with agent parameters
     temperature: float = 0.7
     max_tokens: int = 500
 
@@ -665,17 +665,28 @@ curl -X POST http://localhost:8000/invoke \\
         # Invoke agent
         return await _invoke_agent(agent_id, agent_info, request.input, temperature, max_tokens)
 
-    async def _invoke_agent(agent_id: str, agent_info: dict, input_text: str, temperature: float, max_tokens: int):
+    async def _invoke_agent(agent_id: str, agent_info: dict, input_data: Any, temperature: float, max_tokens: int):
         """Internal function to invoke an agent."""
         try:
             start_time = datetime.now(timezone.utc)
             agent_func = agent_info["function"]
 
-            # Call the agent function
-            if asyncio.iscoroutinefunction(agent_func):
-                output = await agent_func(input_text)
+            # Determine how to call the agent based on input type
+            if isinstance(input_data, dict):
+                # Dict input: pass as keyword arguments to support multi-parameter agents
+                # Filter out None values and reserved keys
+                kwargs = {k: v for k, v in input_data.items() if v is not None and k not in ('temperature', 'max_tokens')}
+
+                if asyncio.iscoroutinefunction(agent_func):
+                    output = await agent_func(**kwargs)
+                else:
+                    output = agent_func(**kwargs)
             else:
-                output = agent_func(input_text)
+                # String input: pass as positional argument (backward compatible)
+                if asyncio.iscoroutinefunction(agent_func):
+                    output = await agent_func(input_data)
+                else:
+                    output = agent_func(input_data)
 
             end_time = datetime.now(timezone.utc)
             latency_ms = (end_time - start_time).total_seconds() * 1000
@@ -690,6 +701,12 @@ curl -X POST http://localhost:8000/invoke \\
                 timestamp=end_time.isoformat()
             )
 
+        except TypeError as e:
+            # Provide helpful error message for parameter mismatches
+            raise HTTPException(
+                status_code=400,
+                detail=f"Agent parameter error: {str(e)}. Check that your input matches the agent's expected parameters: {agent_info.get('parameters', 'unknown')}"
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
 
@@ -758,7 +775,13 @@ curl -X POST http://localhost:8000/invoke \\
                                     "schema": {
                                         "type": "object",
                                         "properties": {
-                                            "input": {"type": "string", "description": "Input text for the agent"},
+                                            "input": {
+                                                "oneOf": [
+                                                    {"type": "string", "description": "Simple text input"},
+                                                    {"type": "object", "description": "Structured input with agent parameters"}
+                                                ],
+                                                "description": "Input for the agent - can be a string or an object with parameters"
+                                            },
                                             "temperature": {"type": "number", "default": agent_info["temperature"]},
                                             "max_tokens": {"type": "integer", "default": agent_info["max_tokens"]}
                                         },

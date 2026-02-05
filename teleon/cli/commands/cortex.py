@@ -8,7 +8,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from typing import Optional
 from pathlib import Path
 import asyncio
@@ -18,7 +17,7 @@ from datetime import datetime
 
 app = typer.Typer(
     name="cortex",
-    help="Manage Cortex memory and learning",
+    help="Manage Cortex memory system",
     add_completion=False
 )
 
@@ -27,487 +26,464 @@ console = Console()
 
 @app.command()
 def stats(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
+    agent_name: str = typer.Argument(..., help="Agent name"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Scope filter (JSON format, e.g., '{\"customer_id\": \"alice\"}')"),
     format: str = typer.Option("table", "--format", "-f", help="Output format (table, json)")
 ):
     """
     Show Cortex memory statistics for an agent.
-    
+
     Example:
-        teleon cortex stats agent_abc123
-        teleon cortex stats agent_abc123 --format json
+        teleon cortex stats support-agent
+        teleon cortex stats support-agent --scope '{"customer_id": "alice"}'
+        teleon cortex stats support-agent --format json
     """
     console.print(Panel.fit(
-        f"[bold green]Cortex Statistics[/bold green]",
-        title="🧠 Memory & Learning"
+        f"[bold green]Cortex Memory Statistics[/bold green]",
+        title="🧠 Memory"
     ))
-    
-    console.print(f"\n[dim]Agent: {agent_id}[/dim]")
-    
-    # Try to get stats from local registry first
+
+    console.print(f"\n[dim]Agent: {agent_name}[/dim]")
+
+    # Parse scope filter
+    scope_values = {}
+    if scope:
+        try:
+            scope_values = json.loads(scope)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid scope JSON: {scope}[/red]")
+            raise typer.Exit(1)
+
+    # Try to get stats from local memory manager
     try:
-        from teleon.cortex.registry import registry
-        
+        from teleon.cortex import get_memory_manager, InMemoryBackend, get_embedding_service, Memory
+
         async def get_stats():
-            cortex = await registry.get(agent_id)
-            if cortex:
-                return await cortex.get_statistics()
-            return None
-        
+            # Create or get memory manager for this agent
+            manager = get_memory_manager(agent_name)
+
+            if manager is None:
+                # Try to create a temporary memory instance
+                backend = InMemoryBackend()
+                embedding_service = get_embedding_service(is_paid_tier=False)
+
+                memory = Memory(
+                    backend=backend,
+                    embedding_service=embedding_service,
+                    memory_name=agent_name,
+                    scope=list(scope_values.keys()),
+                    scope_values=scope_values
+                )
+
+                total = await memory.count()
+                return {"total_entries": total, "scope": scope_values}
+
+            # Get stats from manager's memory
+            memory = manager.create_memory(scope_values)
+            total = await memory.count()
+
+            return {"total_entries": total, "scope": scope_values, "agent": agent_name}
+
         stats = asyncio.run(get_stats())
-        if stats:
-            _display_statistics(stats, format)
-            return
+        _display_stats(stats, format)
+        return
+
     except Exception as e:
-        console.print(f"[dim]Local registry check failed: {e}[/dim]")
-    
+        console.print(f"[dim]Local stats failed: {e}[/dim]")
+
     # Try to get stats from API if available
     try:
         import httpx
         import os
-        
+
         platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
         config_file = Path.home() / ".teleon" / "config.json"
-        
+
         if config_file.exists():
             config_data = json.loads(config_file.read_text())
             auth_token = config_data.get("auth_token")
-            
+
             if auth_token:
                 try:
+                    params = {"scope": json.dumps(scope_values)} if scope_values else {}
                     response = httpx.get(
-                        f"{platform_url}/api/v1/agents/{agent_id}/cortex/statistics",
+                        f"{platform_url}/api/v1/agents/{agent_name}/cortex/stats",
                         headers={"Authorization": f"Bearer {auth_token}"},
+                        params=params,
                         timeout=10.0
                     )
-                    
+
                     if response.status_code == 200:
                         stats = response.json()
-                        _display_statistics(stats, format)
+                        _display_stats(stats, format)
                         return
                 except Exception:
-                    pass  # Fall back to code example
+                    pass
     except Exception:
         pass
-    
+
     # Fallback to code example
-    console.print("\n[yellow]Note:[/yellow] Initialize Cortex with agent to view stats")
-    console.print("\n[dim]Example in code:[/dim]")
-    console.print(f"[dim]  from teleon.cortex import CortexMemory[/dim]")
-    console.print(f"[dim]  cortex = CortexMemory(agent_id='{agent_id}')[/dim]")
-    console.print(f"[dim]  await cortex.initialize()[/dim]")
-    console.print(f"[dim]  stats = await cortex.get_statistics()[/dim]")
+    console.print("\n[yellow]Note:[/yellow] No active memory found for this agent")
+    console.print("\n[dim]Example usage in code:[/dim]")
+    console.print(f"""[dim]
+from teleon import TeleonClient
+
+client = TeleonClient(api_key="...")
+
+@client.agent(name="{agent_name}", cortex=True)
+async def {agent_name.replace('-', '_')}(query: str, customer_id: str, cortex):
+    # Get stats
+    total = await cortex.count()
+    queries = await cortex.count(filter={{"type": "query"}})
+    print(f"Total: {{total}}, Queries: {{queries}}")
+[/dim]""")
 
 
-def _display_statistics(stats: dict, format: str):
+def _display_stats(stats: dict, format: str):
     """Display statistics in table or JSON format."""
     if format == "json":
         console.print(json.dumps(stats, indent=2))
         return
-    
+
     # Display as table
     table = Table(title="\n[bold]Memory Statistics[/bold]")
-    table.add_column("Memory Type", style="cyan", width=15)
-    table.add_column("Metric", style="white", width=25)
-    table.add_column("Value", style="green", width=20)
-    
-    # Episodic memory
-    if "episodic" in stats:
-        ep = stats["episodic"]
-        table.add_row("Episodic", "Total Episodes", str(ep.get("total_episodes", 0)))
-        table.add_row("", "Success Rate", f"{ep.get('success_rate', 0):.1f}%")
-        table.add_row("", "Avg Duration", f"{ep.get('avg_duration_ms', 0):.1f}ms")
-        table.add_row("", "Unique Sessions", str(ep.get("unique_sessions", 0)))
-    
-    # Semantic memory
-    if "semantic" in stats:
-        sem = stats["semantic"]
-        table.add_row("Semantic", "Total Entries", str(sem.get("total_entries", 0)))
-        table.add_row("", "Categories", str(len(sem.get("categories", []))))
-        table.add_row("", "Avg Importance", f"{sem.get('avg_importance', 0):.2f}")
-    
-    # Procedural memory
-    if "procedural" in stats:
-        proc = stats["procedural"]
-        table.add_row("Procedural", "Total Patterns", str(proc.get("total_patterns", 0)))
-        table.add_row("", "Avg Success Rate", f"{proc.get('avg_success_rate', 0):.1f}%")
-        table.add_row("", "Total Usage", str(proc.get("total_usage", 0)))
-    
+    table.add_column("Metric", style="cyan", width=25)
+    table.add_column("Value", style="green", width=30)
+
+    table.add_row("Total Entries", str(stats.get("total_entries", 0)))
+
+    if stats.get("scope"):
+        table.add_row("Scope", json.dumps(stats["scope"]))
+
+    if stats.get("agent"):
+        table.add_row("Agent", stats["agent"])
+
+    # Additional stats if available
+    for key, value in stats.items():
+        if key not in ["total_entries", "scope", "agent"]:
+            table.add_row(key.replace("_", " ").title(), str(value))
+
     console.print(table)
 
 
 @app.command()
-def inspect(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
-    memory_type: str = typer.Option("all", help="Memory type (working, episodic, semantic, procedural, all)")
+def search(
+    agent_name: str = typer.Argument(..., help="Agent name"),
+    query: str = typer.Argument(..., help="Search query"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Scope filter (JSON)"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Maximum results"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format (table, json)")
 ):
     """
-    Inspect agent memory contents.
-    
+    Search agent memory semantically.
+
     Example:
-        teleon cortex inspect agent_abc123
-        teleon cortex inspect agent_abc123 --memory-type episodic
+        teleon cortex search support-agent "billing issues"
+        teleon cortex search support-agent "refund" --scope '{"customer_id": "alice"}'
     """
     console.print(Panel.fit(
-        f"[bold green]Memory Inspection[/bold green]\n"
-        f"[dim]Agent: {agent_id}[/dim]\n"
-        f"[dim]Type: {memory_type}[/dim]",
-        title="🔍 Cortex Inspector"
+        f"[bold green]Cortex Memory Search[/bold green]\n"
+        f"[dim]Query: {query}[/dim]",
+        title="🔍 Search"
     ))
-    
-    console.print("\n[yellow]Note:[/yellow] Memory inspection available through agent runtime")
-    console.print("\n[dim]To inspect memory programmatically:[/dim]")
-    console.print("[dim]  cortex = await create_cortex(agent_id)[/dim]")
-    
-    if memory_type in ["episodic", "all"]:
-        console.print("[dim]  episodes = await cortex.episodic.get_recent(10)[/dim]")
-    if memory_type in ["semantic", "all"]:
-        console.print("[dim]  knowledge = await cortex.semantic.get_by_category('category')[/dim]")
-    if memory_type in ["procedural", "all"]:
-        console.print("[dim]  patterns = await cortex.procedural.get_top_patterns(10)[/dim]")
+
+    # Parse scope filter
+    scope_values = {}
+    if scope:
+        try:
+            scope_values = json.loads(scope)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid scope JSON: {scope}[/red]")
+            raise typer.Exit(1)
+
+    # Try local search
+    try:
+        from teleon.cortex import get_memory_manager, InMemoryBackend, get_embedding_service, Memory
+
+        async def do_search():
+            manager = get_memory_manager(agent_name)
+
+            if manager:
+                memory = manager.create_memory(scope_values)
+            else:
+                backend = InMemoryBackend()
+                embedding_service = get_embedding_service(is_paid_tier=False)
+                memory = Memory(
+                    backend=backend,
+                    embedding_service=embedding_service,
+                    memory_name=agent_name,
+                    scope=list(scope_values.keys()),
+                    scope_values=scope_values
+                )
+
+            results = await memory.search(query=query, limit=limit)
+            return results
+
+        results = asyncio.run(do_search())
+
+        if not results:
+            console.print("\n[yellow]No results found[/yellow]")
+            return
+
+        _display_search_results(results, format)
+        return
+
+    except Exception as e:
+        console.print(f"[dim]Local search failed: {e}[/dim]")
+
+    # Fallback
+    console.print("\n[yellow]Note:[/yellow] Search requires active memory instance")
+    console.print("[dim]Use cortex.search(query='...') in your agent code[/dim]")
+
+
+def _display_search_results(results: list, format: str):
+    """Display search results."""
+    if format == "json":
+        console.print(json.dumps([
+            {
+                "id": r.id,
+                "content": r.content,
+                "score": r.score,
+                "fields": r.fields,
+                "created_at": r.created_at.isoformat() if r.created_at else None
+            }
+            for r in results
+        ], indent=2))
+        return
+
+    console.print(f"\n[bold]Found {len(results)} results:[/bold]\n")
+
+    for i, entry in enumerate(results, 1):
+        score_str = f"[green]{entry.score:.3f}[/green]" if entry.score else "[dim]N/A[/dim]"
+        console.print(f"[bold]{i}.[/bold] Score: {score_str}")
+        console.print(f"   Content: {entry.content[:100]}{'...' if len(entry.content) > 100 else ''}")
+        if entry.fields:
+            fields_str = ", ".join(f"{k}={v}" for k, v in entry.fields.items() if not k.startswith("_"))
+            if fields_str:
+                console.print(f"   Fields: [dim]{fields_str}[/dim]")
+        console.print()
+
+
+@app.command()
+def history(
+    agent_name: str = typer.Argument(..., help="Agent name"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Scope filter (JSON)"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Maximum entries"),
+    type_filter: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by type field"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format (table, json)")
+):
+    """
+    View recent memory entries.
+
+    Example:
+        teleon cortex history support-agent
+        teleon cortex history support-agent --scope '{"customer_id": "alice"}' --limit 10
+        teleon cortex history support-agent --type query
+    """
+    console.print(Panel.fit(
+        f"[bold green]Memory History[/bold green]",
+        title="📋 History"
+    ))
+
+    console.print(f"\n[dim]Agent: {agent_name}[/dim]")
+
+    # Parse scope filter
+    scope_values = {}
+    if scope:
+        try:
+            scope_values = json.loads(scope)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid scope JSON: {scope}[/red]")
+            raise typer.Exit(1)
+
+    # Build filter
+    filter_dict = dict(scope_values)
+    if type_filter:
+        filter_dict["type"] = type_filter
+
+    # Try local retrieval
+    try:
+        from teleon.cortex import get_memory_manager, InMemoryBackend, get_embedding_service, Memory
+
+        async def get_history():
+            manager = get_memory_manager(agent_name)
+
+            if manager:
+                memory = manager.create_memory(scope_values)
+            else:
+                backend = InMemoryBackend()
+                embedding_service = get_embedding_service(is_paid_tier=False)
+                memory = Memory(
+                    backend=backend,
+                    embedding_service=embedding_service,
+                    memory_name=agent_name,
+                    scope=list(scope_values.keys()),
+                    scope_values=scope_values
+                )
+
+            entries = await memory.get(filter=filter_dict if filter_dict else {}, limit=limit)
+            return entries
+
+        entries = asyncio.run(get_history())
+
+        if not entries:
+            console.print("\n[yellow]No entries found[/yellow]")
+            return
+
+        _display_history(entries, format)
+        return
+
+    except Exception as e:
+        console.print(f"[dim]Local history failed: {e}[/dim]")
+
+    # Fallback
+    console.print("\n[yellow]Note:[/yellow] History requires active memory instance")
+    console.print("[dim]Use cortex.get(filter={...}) in your agent code[/dim]")
+
+
+def _display_history(entries: list, format: str):
+    """Display history entries."""
+    if format == "json":
+        console.print(json.dumps([
+            {
+                "id": e.id,
+                "content": e.content,
+                "fields": e.fields,
+                "created_at": e.created_at.isoformat() if e.created_at else None
+            }
+            for e in entries
+        ], indent=2))
+        return
+
+    table = Table(title=f"\n[bold]Recent Entries ({len(entries)})[/bold]")
+    table.add_column("Time", style="dim", width=20)
+    table.add_column("Type", style="cyan", width=12)
+    table.add_column("Content", style="white", width=50)
+
+    for entry in entries:
+        time_str = entry.created_at.strftime("%Y-%m-%d %H:%M:%S") if entry.created_at else "N/A"
+        type_str = entry.fields.get("type", "-") if entry.fields else "-"
+        content_str = entry.content[:50] + "..." if len(entry.content) > 50 else entry.content
+
+        table.add_row(time_str, type_str, content_str)
+
+    console.print(table)
 
 
 @app.command()
 def clear(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
-    memory_type: str = typer.Option("all", help="Memory type to clear"),
+    agent_name: str = typer.Argument(..., help="Agent name"),
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Scope filter (JSON) - required for safety"),
     confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation")
 ):
     """
-    Clear agent memory.
-    
+    Clear memory entries.
+
     Example:
-        teleon cortex clear agent_abc123
-        teleon cortex clear agent_abc123 --memory-type episodic --yes
+        teleon cortex clear support-agent --scope '{"customer_id": "alice"}'
+        teleon cortex clear support-agent --scope '{"customer_id": "alice"}' --yes
     """
+    if not scope:
+        console.print("[red]❌ --scope is required for safety[/red]")
+        console.print("[dim]Example: --scope '{\"customer_id\": \"alice\"}'[/dim]")
+        raise typer.Exit(1)
+
+    # Parse scope filter
+    try:
+        scope_values = json.loads(scope)
+    except json.JSONDecodeError:
+        console.print(f"[red]Invalid scope JSON: {scope}[/red]")
+        raise typer.Exit(1)
+
     if not confirm:
-        console.print(f"[yellow]⚠️  This will clear {memory_type} memory for agent {agent_id}[/yellow]")
-        confirm_input = console.input("Continue? [y/N]: ")
+        console.print(f"[yellow]⚠️  This will delete all entries matching:[/yellow]")
+        console.print(f"   Agent: {agent_name}")
+        console.print(f"   Scope: {json.dumps(scope_values)}")
+        confirm_input = console.input("\nContinue? [y/N]: ")
         if confirm_input.lower() != 'y':
             console.print("[dim]Cancelled[/dim]")
             return
-    
-    console.print(f"[bold]Clearing {memory_type} memory for {agent_id}...[/bold]")
-    console.print("\n[yellow]Note:[/yellow] Memory clearing available through agent runtime")
-    console.print("[dim]Use: await cortex.clear_all()[/dim]")
 
-
-@app.command()
-def learning(
-    agent_id: str = typer.Argument(..., help="Agent ID")
-):
-    """
-    Show learning metrics for an agent.
-    
-    Example:
-        teleon cortex learning agent_abc123
-    """
-    console.print(Panel.fit(
-        f"[bold green]Learning Metrics[/bold green]",
-        title="🎓 Continuous Learning"
-    ))
-    
-    console.print(f"\n[dim]Agent: {agent_id}[/dim]")
-    console.print("\n[bold]Learning Status:[/bold] Active")
-    console.print("[dim]Agents automatically learn from interactions[/dim]")
-    
-    console.print("\n[bold]Capabilities:[/bold]")
-    console.print("  • Pattern recognition from successful interactions")
-    console.print("  • Cost optimization through model selection")
-    console.print("  • Latency improvements")
-    console.print("  • Knowledge extraction")
-    
-    console.print("\n[dim]View detailed metrics in code:[/dim]")
-    console.print("[dim]  from teleon.cortex.learning import LearningEngine[/dim]")
-    console.print("[dim]  metrics = engine.get_metrics()[/dim]")
-
-
-@app.command()
-def monitor(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
-    interval: int = typer.Option(5, "--interval", "-i", help="Update interval in seconds"),
-    format: str = typer.Option("table", "--format", "-f", help="Output format (table, json)")
-):
-    """
-    Monitor Cortex memory metrics in real-time.
-    
-    Example:
-        teleon cortex monitor agent_abc123
-        teleon cortex monitor agent_abc123 --interval 10
-    """
-    console.print(Panel.fit(
-        f"[bold cyan]Cortex Memory Monitor[/bold cyan]\n"
-        f"Agent: [yellow]{agent_id}[/yellow]\n"
-        f"Update interval: [dim]{interval}s[/dim]",
-        title="📊 Real-Time Monitoring"
-    ))
-    
-    # Try local registry first
+    # Try local deletion
     try:
-        from teleon.cortex.registry import registry
-        
-        async def monitor_local():
-            cortex = await registry.get(agent_id)
-            if not cortex:
-                return None
-            return cortex.get_metrics()
-        
-        while True:
-            try:
-                metrics = asyncio.run(monitor_local())
-                if metrics:
-                    _display_metrics(metrics, format)
-                else:
-                    console.print(f"[yellow]Cortex instance not found for agent: {agent_id}[/yellow]")
-                    console.print("[dim]Make sure Cortex is initialized for this agent[/dim]")
-                    break
-                
-                time.sleep(interval)
-                console.print("\n" + "─" * 70 + "\n")
-                
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Monitoring stopped[/yellow]")
-                break
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-                time.sleep(interval)
-        
+        from teleon.cortex import get_memory_manager, InMemoryBackend, get_embedding_service, Memory
+
+        async def do_clear():
+            manager = get_memory_manager(agent_name)
+
+            if manager:
+                memory = manager.create_memory(scope_values)
+            else:
+                backend = InMemoryBackend()
+                embedding_service = get_embedding_service(is_paid_tier=False)
+                memory = Memory(
+                    backend=backend,
+                    embedding_service=embedding_service,
+                    memory_name=agent_name,
+                    scope=list(scope_values.keys()),
+                    scope_values=scope_values
+                )
+
+            deleted = await memory.delete(filter={})
+            return deleted
+
+        deleted = asyncio.run(do_clear())
+        console.print(f"\n[green]✓ Deleted {deleted} entries[/green]")
         return
+
     except Exception as e:
-        console.print(f"[dim]Local monitoring failed: {e}[/dim]")
-    
-    # Fallback to API
-    try:
-        import httpx
-        import os
-        
-        platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
-        config_file = Path.home() / ".teleon" / "config.json"
-        
-        auth_token = None
-        if config_file.exists():
-            config_data = json.loads(config_file.read_text())
-            auth_token = config_data.get("auth_token")
-        
-        headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
-        
-        while True:
-            try:
-                response = httpx.get(
-                    f"{platform_url}/api/v1/agents/{agent_id}/cortex/metrics",
-                    headers=headers,
-                    timeout=10.0
-                )
-                
-                if response.status_code == 200:
-                    metrics = response.json()
-                    _display_metrics(metrics, format)
-                else:
-                    console.print(f"[red]Error: {response.status_code}[/red]")
-                
-                time.sleep(interval)
-                console.print("\n" + "─" * 70 + "\n")
-                
-            except KeyboardInterrupt:
-                console.print("\n[yellow]Monitoring stopped[/yellow]")
-                break
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-                time.sleep(interval)
-                
-    except ImportError:
-        console.print("\n[yellow]Note:[/yellow] Real-time monitoring requires Cortex instance or API connection")
-        console.print(f"[dim]Use: cortex = CortexMemory(agent_id='{agent_id}')[/dim]")
-        console.print("[dim]await cortex.initialize()[/dim]")
-        console.print("[dim]metrics = cortex.get_metrics()[/dim]")
+        console.print(f"[red]Clear failed: {e}[/red]")
 
-
-def _display_metrics(metrics: dict, format: str):
-    """Display metrics in table or JSON format."""
-    if format == "json":
-        console.print(json.dumps(metrics, indent=2))
-        return
-    
-    # Display as table
-    table = Table(title=f"\n[bold]Cortex Metrics - {datetime.now().strftime('%H:%M:%S')}[/bold]")
-    table.add_column("Category", style="cyan", width=20)
-    table.add_column("Metric", style="white", width=25)
-    table.add_column("Value", style="green", width=20)
-    
-    # Operations
-    if "operations" in metrics:
-        for memory_type, ops in metrics["operations"].items():
-            for op_name, op_stats in ops.items():
-                table.add_row(
-                    f"{memory_type}.{op_name}",
-                    "Count",
-                    str(op_stats.get("count", 0))
-                )
-                table.add_row(
-                    "",
-                    "Avg Latency",
-                    f"{op_stats.get('avg_latency_ms', 0):.2f}ms"
-                )
-                table.add_row(
-                    "",
-                    "P95 Latency",
-                    f"{op_stats.get('p95_latency_ms', 0):.2f}ms"
-                )
-                if op_stats.get("errors", 0) > 0:
-                    table.add_row(
-                        "",
-                        "Errors",
-                        f"[red]{op_stats.get('errors', 0)}[/red]"
-                    )
-    
-    # Cache
-    if "cache" in metrics:
-        cache = metrics["cache"]
-        table.add_row("Cache", "Hit Rate", f"{cache.get('hit_rate', 0):.1f}%")
-        table.add_row("", "Hits", str(cache.get("hits", 0)))
-        table.add_row("", "Misses", str(cache.get("misses", 0)))
-    
-    console.print(table)
+    # Fallback
+    console.print("\n[yellow]Note:[/yellow] Clear requires active memory instance")
+    console.print("[dim]Use cortex.delete(filter={...}) in your agent code[/dim]")
 
 
 @app.command()
-def profile(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
-    period: str = typer.Option("24h", "--period", "-p", help="Time period (1h, 24h, 7d, 30d)"),
-    export: Optional[str] = typer.Option(None, "--export", "-e", help="Export to file (JSON)")
-):
+def info():
     """
-    Get performance profiling report for Cortex memory.
-    
+    Show Cortex system information.
+
     Example:
-        teleon cortex profile agent_abc123
-        teleon cortex profile agent_abc123 --period 7d --export performance.json
+        teleon cortex info
     """
     console.print(Panel.fit(
-        f"[bold cyan]Performance Profile[/bold cyan]\n"
-        f"Agent: [yellow]{agent_id}[/yellow]\n"
-        f"Period: [dim]{period}[/dim]",
-        title="📊 Performance Analysis"
+        "[bold cyan]Cortex Memory System[/bold cyan]",
+        title="ℹ️ Info"
     ))
-    
-    # Try local registry first
+
+    # Check what's available
     try:
-        from teleon.cortex.registry import registry
-        
-        async def get_perf():
-            cortex = await registry.get(agent_id)
-            if not cortex:
-                return None
-            if not cortex._profiler:
-                return None
-            return cortex.get_performance_report()
-        
-        perf_data = asyncio.run(get_perf())
-        if perf_data:
-            perf_data["period"] = period
-            perf_data["agent_id"] = agent_id
-            
-            # Export if requested
-            if export:
-                with open(export, 'w') as f:
-                    json.dump(perf_data, f, indent=2)
-                console.print(f"\n[green]✓ Exported to {export}[/green]")
-            
-            _display_performance(perf_data)
-            return
-    except Exception as e:
-        console.print(f"[dim]Local profiling failed: {e}[/dim]")
-    
-    # Fallback to API
-    try:
-        import httpx
-        import os
-        
-        platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
-        config_file = Path.home() / ".teleon" / "config.json"
-        
-        auth_token = None
-        if config_file.exists():
-            config_data = json.loads(config_file.read_text())
-            auth_token = config_data.get("auth_token")
-        
-        headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
-        
-        response = httpx.get(
-            f"{platform_url}/api/v1/agents/{agent_id}/cortex/performance",
-            headers=headers,
-            params={"period": period},
-            timeout=10.0
+        from teleon.cortex import (
+            POSTGRES_AVAILABLE,
+            REDIS_AVAILABLE,
+            FASTEMBED_AVAILABLE,
+            OPENAI_EMBED_AVAILABLE
         )
-        
-        if response.status_code == 200:
-            perf_data = response.json()
-            
-            # Export if requested
-            if export:
-                with open(export, 'w') as f:
-                    json.dump(perf_data, f, indent=2)
-                console.print(f"\n[green]✓ Exported to {export}[/green]")
-            
-            _display_performance(perf_data)
-        else:
-            console.print(f"[red]Error: {response.status_code}[/red]")
-            console.print(f"[dim]{response.text}[/dim]")
-            
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        console.print("\n[yellow]Note:[/yellow] Performance profiling requires Cortex instance or API connection")
-        console.print(f"[dim]Use: cortex = CortexMemory(agent_id='{agent_id}')[/dim]")
-        console.print("[dim]await cortex.initialize()[/dim]")
-        console.print("[dim]report = cortex.get_performance_report()[/dim]")
 
+        console.print("\n[bold]Storage Backends:[/bold]")
+        console.print(f"  • InMemory: [green]✓ Available[/green]")
+        console.print(f"  • PostgreSQL: {'[green]✓ Available[/green]' if POSTGRES_AVAILABLE else '[dim]Not installed (pip install asyncpg)[/dim]'}")
+        console.print(f"  • Redis: {'[green]✓ Available[/green]' if REDIS_AVAILABLE else '[dim]Not installed (pip install redis)[/dim]'}")
 
-def _display_performance(perf_data: dict):
-    """Display performance profiling data."""
-    # Operations table
-    if "operations" in perf_data:
-        table = Table(title="\n[bold]Operation Performance[/bold]")
-        table.add_column("Operation", style="cyan", width=25)
-        table.add_column("Count", style="white", width=10, justify="right")
-        table.add_column("Avg (ms)", style="green", width=12, justify="right")
-        table.add_column("P95 (ms)", style="yellow", width=12, justify="right")
-        table.add_column("P99 (ms)", style="red", width=12, justify="right")
-        
-        for op_name, op_data in perf_data["operations"].items():
-            latency = op_data.get("latency_ms", {})
-            table.add_row(
-                op_name,
-                str(op_data.get("count", 0)),
-                f"{latency.get('avg', 0):.2f}",
-                f"{latency.get('p95', 0):.2f}",
-                f"{latency.get('p99', 0):.2f}"
-            )
-        
-        console.print(table)
-    
-    # Slow operations
-    if perf_data.get("slow_operations"):
-        console.print("\n[bold yellow]⚠️  Slow Operations (>100ms):[/bold yellow]")
-        for slow_op in perf_data["slow_operations"][:10]:
-            timestamp = slow_op.get("timestamp", "")
-            if timestamp:
-                try:
-                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                    timestamp = dt.strftime("%H:%M:%S")
-                except:
-                    pass
-            console.print(
-                f"  • [red]{slow_op.get('operation', 'unknown')}[/red]: "
-                f"{slow_op.get('duration_ms', 0):.1f}ms at {timestamp}"
-            )
-    
-    # Recommendations
-    if perf_data.get("recommendations"):
-        console.print("\n[bold cyan]💡 Recommendations:[/bold cyan]")
-        for rec in perf_data["recommendations"]:
-            console.print(f"  • {rec}")
+        console.print("\n[bold]Embedding Models:[/bold]")
+        console.print(f"  • FastEmbed: {'[green]✓ Available (free)[/green]' if FASTEMBED_AVAILABLE else '[dim]Not installed (pip install fastembed)[/dim]'}")
+        console.print(f"  • OpenAI: {'[green]✓ Available (paid)[/green]' if OPENAI_EMBED_AVAILABLE else '[dim]Not installed (pip install openai)[/dim]'}")
+
+        console.print("\n[bold]API Methods:[/bold]")
+        console.print("  • store() - Save content with any fields")
+        console.print("  • search() - Semantic search with optional filter")
+        console.print("  • get() - Get by filter (no semantic search)")
+        console.print("  • update() - Update entries matching filter")
+        console.print("  • delete() - Delete entries matching filter")
+        console.print("  • count() - Count entries matching filter")
+
+        console.print("\n[bold]Documentation:[/bold]")
+        console.print("  https://docs.teleon.ai/cortex")
+
+    except ImportError as e:
+        console.print(f"[red]Cortex not available: {e}[/red]")
 
 
 if __name__ == "__main__":
     app()
-
