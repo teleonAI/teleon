@@ -50,6 +50,7 @@ setup(
         # Web Framework
         "fastapi>=0.104.1",
         "uvicorn[standard]>=0.30.0,<1.0.0",
+        "uvloop<0.21",
         # Data Validation
         "pydantic>=2.5.0",
         "pydantic-settings>=2.1.0",
