@@ -89,7 +89,8 @@ def main():
             app,
             host=host,
             port=port,
-            log_level="info"
+            log_level="info",
+            loop="asyncio"
         )
     except KeyboardInterrupt:
         print("\n🛑 Server stopped")
