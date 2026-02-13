@@ -63,8 +63,8 @@ python = ">=3.9,<3.14"
 
 # Web Framework
 fastapi = ">=0.104,<0.105"
-uvicorn = { extras = ["standard"], version = ">=0.30.0,<1.0.0" }
-uvloop = "^0.21"
+uvicorn = { extras = ["standard"], version = ">=0.32.0,<1.0.0" },
+
 
 # Data Validation
 pydantic = ">=2.5,<3.0"
