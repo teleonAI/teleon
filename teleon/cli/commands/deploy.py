@@ -400,7 +400,15 @@ def validate_api_keys_in_code(agents, environment):
 
 
 def detect_agents():
-    """Detect agents in current directory - scans ALL Python files recursively"""
+    """Detect agents in current directory - scans user project Python files recursively"""
+    
+    # Directories to always skip (virtual envs, installed packages, build artifacts, etc.)
+    SKIP_DIRS = {
+        'venv', '.venv', 'env', '.env', 'node_modules', '.git',
+        '__pycache__', 'site-packages', 'dist-packages',
+        '.tox', '.nox', '.mypy_cache', '.pytest_cache',
+        'dist', 'build', '.eggs', 'egg-info',
+    }
     
     # Look for agents in any Python file, not just files named "agents.py"
     agents_found = []
@@ -408,8 +416,17 @@ def detect_agents():
     
     # Scan ALL Python files recursively
     for file in Path(".").rglob("*.py"):
+        # Skip files inside excluded directories
+        file_parts = set(file.parts)
+        if file_parts & SKIP_DIRS:
+            continue
+        
+        # Also skip any directory that ends with .egg-info or starts with '.'
+        if any(part.endswith('.egg-info') or (part.startswith('.') and part != '.') for part in file.parts):
+            continue
+        
         # Skip test files and __pycache__
-        if "test" in str(file).lower() or "__pycache__" in str(file):
+        if "test" in str(file).lower():
             continue
         
         # Skip if we've already processed this file (avoid duplicates)
@@ -442,6 +459,10 @@ def detect_agents():
                     if name_match:
                         matches.append(name_match.group(1))
             for name in matches:
+                # Skip placeholder/template agent names (e.g. {agent_name}, {{name}})
+                if '{' in name or '}' in name or name.strip() == '':
+                    continue
+                
                 # Better detection of feature usage
                 uses_cortex = (
                     "cortex=" in content or 

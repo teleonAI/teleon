@@ -49,12 +49,16 @@ setup(
     install_requires=[
         # Web Framework
         "fastapi>=0.104.1",
-        "uvicorn[standard]>=0.32.0,<1.0.0",
+        "uvicorn>=0.32.0,<1.0.0",
+        "httptools>=0.6.0",
+        "watchfiles>=0.20.0",
+        "websockets>=12.0",
+        "uvloop>=0.19.0; sys_platform != 'win32'",
         # Data Validation
         "pydantic>=2.5.0",
         "pydantic-settings>=2.1.0",
         # CLI
-        "typer>=0.12.0",
+        "typer>=0.15.0",
         "rich>=13.7.0",
         # Utilities
         "python-dotenv>=1.0.0",
