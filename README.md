@@ -12,9 +12,10 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://img.shields.io/badge/pypi-v0.1.0-blue)](https://pypi.org/project/teleon/)
 [![Documentation](https://img.shields.io/badge/docs-teleon.ai-blue)](https://docs.teleon.ai)
-[![Discord](https://img.shields.io/badge/discord-join-7289da)](https://discord.gg/teleon)
+[![Discord](https://img.shields.io/badge/discord-join-7289da)](https://discord.gg/)
+[![Twitter](https://img.shields.io/badge/twitter-@Teleon__AI-1DA1F2)](https://twitter.com/Teleon_AI)
 
-[Website](https://teleon.ai) • [Documentation](https://docs.teleon.ai) • [Examples](./examples) • [Discord](https://discord.gg/teleon) • [Blog](https://teleon.ai/blog)
+[Website](https://teleon.ai) • [Documentation](https://docs.teleon.ai) • [Examples](./examples) • [Discord](https://discord.gg/) • [Blog](https://teleon.ai/blog)
 
 </div>
 
@@ -31,14 +32,17 @@ Teleon is a **production-grade platform** for building, deploying, and scaling A
 pip install teleon
 
 # Create an agent
-from teleon import agent
+from teleon import TeleonClient
 
-@agent(
+client = TeleonClient(api_key="tlk_live_...")
+
+@client.agent(
     name="customer-support",
-    memory=True,
-    scale={'min': 1, 'max': 100}
+    cortex=True,
+    helix={"min_instances": 1, "max_instances": 100},
+    sentinel={"content_filtering": True, "pii_detection": True}
 )
-async def support_agent(customer_message: str) -> str:
+async def support_agent(customer_message: str, customer_id: str, cortex) -> str:
     """Handle customer support with AI."""
     return await process_support_request(customer_message)
 
@@ -51,8 +55,8 @@ $ teleon deploy
 **Time to production: 8 minutes**
 
 ✅ Auto-scaling infrastructure  
-✅ Learning from interactions  
-✅ Cost optimization  
+✅ Persistent, searchable memory  
+✅ Built-in safety & compliance  
 ✅ Monitoring & tracing  
 ✅ High availability  
 
@@ -64,10 +68,10 @@ $ teleon deploy
 
 Building AI agents is easy. Making them **production-ready** is hard. Most AI prototypes never reach production because of:
 
-- **Infrastructure complexity** - Setting up vector DBs, caching, queues, orchestration
-- **Scalability challenges** - Handling traffic spikes, multi-agent coordination
-- **Cost management** - LLM costs spiral without proper optimization
-- **Production readiness** - HA, security, monitoring, compliance
+- **Infrastructure complexity** – Setting up databases, caching, queues, orchestration
+- **Scalability challenges** – Handling traffic spikes, multi-agent coordination
+- **Safety & compliance** – Content moderation, PII, GDPR, HIPAA
+- **Production readiness** – HA, monitoring, memory, cost control
 
 **91% of AI prototypes never reach production.**
 
@@ -77,12 +81,13 @@ Teleon provides everything you need to go from prototype to production:
 
 | Without Teleon | With Teleon |
 |----------------|-------------|
-| 6-12 months development | 1 week |
+| 6–12 months development | 1 week |
 | $200K+ engineering cost | $0 infrastructure engineering |
 | Complex setup | One decorator |
 | Manual scaling | Automatic |
 | Build monitoring | Built-in observability |
-| DIY memory systems | 4 memory types included |
+| DIY memory systems | Cortex memory included |
+| Custom safety tooling | Sentinel guardrails included |
 
 ---
 
@@ -105,12 +110,12 @@ pip install teleon[all-storage] # All storage backends
 
 ### Your First Agent
 
-Create a file `my_agent.py`:
-
 ```python
-from teleon import agent
+from teleon import TeleonClient
 
-@agent(name="hello-world")
+client = TeleonClient(api_key="tlk_live_...")
+
+@client.agent(name="hello-world")
 async def hello_agent(name: str) -> str:
     """A simple greeting agent."""
     return f"Hello, {name}! Welcome to Teleon. 🚀"
@@ -136,15 +141,9 @@ curl -X POST http://localhost:8000/agents/hello-world/execute \
 ### Deploy to Production
 
 ```bash
-# Initialize Teleon project
 teleon init
-
-# Configure your deployment
 teleon config set TELEON_API_KEY=<your-api-key>
-
-# Deploy
 teleon deploy
-
 # Your agent is live! 🎉
 ```
 
@@ -152,193 +151,326 @@ teleon deploy
 
 ## 🏗️ Core Features
 
-### 🧬 Helix: Auto-Scaling Runtime
+### 🧠 Cortex: Memory System
 
-Production-ready infrastructure that scales automatically.
-
-```python
-@agent(
-    name="scalable-agent",
-    helix={
-        'min_instances': 2,       # Minimum replicas
-        'max_instances': 50,      # Maximum replicas
-        'target_cpu': 70,         # Target CPU usage
-        'memory_limit_mb': 1024,  # Memory per instance
-        'health_check_interval': 30
-    }
-)
-async def production_agent(task: str) -> dict:
-    """Automatically scales from 2 to 50 instances based on load."""
-    return await process_task(task)
-```
-
-**Features:**
-- ✅ Auto-scaling based on CPU/memory/custom metrics
-- ✅ Health checks and auto-recovery
-- ✅ Load balancing across instances
-- ✅ Zero-downtime deployments
-- ✅ Resource management and limits
-
-### 🧠 Cortex: Memory & Learning
-
-Four types of memory that make agents intelligent and adaptive.
+Cortex gives your agents persistent, searchable memory with **6 simple methods**. Enable it with a single parameter.
 
 ```python
-@agent(
-    name="learning-agent",
+@client.agent(
+    name="support",
     cortex={
-        'learning': True,
-        'memory_types': ['episodic', 'semantic', 'procedural'],
-        'episodic_config': {
-            'max_episodes': 10000,
-            'retention_days': 90
-        },
-        'semantic_config': {
-            'embedding_dim': 128,
-            'min_similarity_score': 0.7
+        "auto": True,
+        "scope": ["customer_id"],        # Automatic multi-tenant isolation
+        "auto_context": {
+            "enabled": True,
+            "history_limit": 10,         # Last N conversations
+            "relevant_limit": 5,         # Top N semantic matches
+            "max_tokens": 2000
         }
     }
 )
-async def intelligent_agent(query: str) -> str:
-    """Agent that learns from every interaction."""
-    # Automatically:
-    # - Remembers past interactions (episodic)
-    # - Builds knowledge base (semantic)
-    # - Learns successful patterns (procedural)
-    # - Maintains session state (working)
-    
-    return await generate_smart_response(query)
+async def support_agent(query: str, customer_id: str, cortex):
+    # Search for relevant past interactions
+    results = await cortex.search(
+        query="previous issues",
+        filter={"type": "resolution"}
+    )
+
+    # Get recent history
+    history = await cortex.get(filter={}, limit=10)
+
+    # Store new information
+    await cortex.store(
+        content=f"Resolved: {query}",
+        type="resolution"
+    )
+
+    return await generate_response(query, results, history)
 ```
 
-**Memory Types:**
+**The 6 Cortex Methods:**
 
-| Type | Purpose | Example Use Case |
-|------|---------|------------------|
-| **Working** | Session state | Current conversation context |
-| **Episodic** | Event history | "What did user ask yesterday?" |
-| **Semantic** | Knowledge base | "Find similar support tickets" |
-| **Procedural** | Learned patterns | "What worked for similar queries?" |
+| Method | Purpose |
+|--------|---------|
+| `store()` | Save content with any custom fields |
+| `search()` | Semantic search with optional filter |
+| `get()` | Fetch by filter (no semantic search) |
+| `update()` | Update entries matching a filter |
+| `delete()` | Delete entries matching a filter |
+| `count()` | Count entries matching a filter |
 
-**Results:**
-- 🎯 40% cost reduction in first week
-- 🎯 25% faster response times
-- 🎯 35% higher success rate
+**Memory Layers** for hierarchical knowledge:
+
+```python
+@client.agent(
+    name="assistant",
+    cortex={
+        "scope": ["org_id", "user_id"],
+        "layers": {
+            "company": {"scope": []},           # Shared across company
+            "team": {"scope": ["org_id"]},      # Scoped to team
+            "personal": {"scope": ["user_id"]}  # Scoped to user
+        }
+    }
+)
+async def assistant(query: str, org_id: str, user_id: str, cortex):
+    company_docs = await cortex.company.search(query=query, limit=5)
+    personal_notes = await cortex.personal.get(filter={}, limit=3)
+    ...
+```
+
+**Storage Backends:**
+
+- **Development** – In-memory (default, zero config)
+- **PostgreSQL + pgvector** – `pip install asyncpg`
+- **Redis + RediSearch** – `pip install redis[asyncio]`
+
+```python
+from teleon.cortex import set_storage_backend, PostgresBackend
+
+backend = PostgresBackend(host="localhost", database="teleon", user="postgres", password="secret")
+set_storage_backend(backend)
+```
+
+---
+
+### 🧬 Helix: Auto-Scaling Runtime
+
+Production-ready runtime that manages agent lifecycle, scaling, health, and LLM costs.
+
+```python
+@client.agent(
+    name="production-agent",
+    helix={
+        "min_instances": 2,
+        "max_instances": 50,
+        "cpu_limit": 2.0,
+        "memory_limit_mb": 512,
+        "health_check_enabled": True,
+        "health_check_interval": 30,
+        "startup_timeout": 30,
+        "shutdown_timeout": 30
+    }
+)
+async def production_agent(query: str) -> dict:
+    return await process(query)
+```
+
+**Shorthand configuration:**
+
+```python
+@client.agent(
+    name="my-agent",
+    helix={
+        "min": 2,       # min_instances
+        "max": 10,      # max_instances
+        "cpu": 2.0,     # cpu_limit
+        "memory": 512   # memory_limit_mb
+    }
+)
+```
+
+**LLM Agent Registration** with token budgets and cost control:
+
+```python
+from teleon.helix import AgentRuntime, RuntimeConfig, ResourceConfig
+
+runtime = AgentRuntime(RuntimeConfig(environment="production", max_workers=20))
+
+await runtime.register_llm_agent(
+    agent_id="chat-agent",
+    agent_callable=chat_handler,
+    model="gpt-4",
+    max_tokens=2000,
+    cost_budget=10.0,          # $10/hour budget
+    resources=ResourceConfig(min_instances=3, max_instances=20)
+)
+```
+
+**Response Caching** to cut LLM costs:
+
+```python
+from teleon.helix import create_cache, CacheStrategy, CacheEvictionPolicy
+
+cache = create_cache(
+    max_size=1000,
+    strategy=CacheStrategy.EXACT,
+    eviction_policy=CacheEvictionPolicy.LRU,
+    default_ttl=3600
+)
+
+cached = await cache.get(messages, model="gpt-4")
+if not cached:
+    response = await llm.complete(messages, model="gpt-4")
+    await cache.set(messages=messages, model="gpt-4", response=response, ttl=3600)
+
+stats = cache.get_statistics()
+print(f"Hit rate: {stats['hit_rate']*100:.1f}%")
+print(f"Tokens saved: {stats['total_tokens_saved']:,}")
+```
+
+**Health Endpoints** for Kubernetes and container orchestration:
+
+```python
+from fastapi import FastAPI
+from teleon.helix import setup_health_endpoints
+
+app = FastAPI()
+health_manager = setup_health_endpoints(app, service_name="my-agent", version="1.0.0")
+
+async def check_database():
+    await db.ping()
+    return True, "Database connected"
+
+health_manager.add_check("database", check_database, critical=True)
+health_manager.set_ready(True, reason="Initialization complete")
+```
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/health` | Overall health (200 healthy / 503 unhealthy) |
+| `/ready` | Readiness probe |
+| `/live` | Liveness probe |
+| `/metrics` | Prometheus-format metrics |
+
+**Key Helix features:**
+- ✅ Auto-scaling based on CPU, memory, and custom metrics
+- ✅ Health checks and auto-recovery
+- ✅ Load balancing across instances
+- ✅ Zero-downtime deployments
+- ✅ Token tracking and cost budgets per LLM agent
+- ✅ Response caching with LRU/LFU/TTL eviction
+- ✅ Batch processing for high-throughput workloads
+- ✅ Hot reload in development
+- ✅ Production metrics reporter
+
+---
 
 ### 🛡️ Sentinel: Safety & Compliance
 
-Real-time safety and compliance controls for production AI agents.
+Real-time guardrails that validate inputs and outputs automatically.
 
 ```python
-@agent(
+@client.agent(
     name="customer-support",
-    helix={'min': 2, 'max': 10},
-    cortex={'learning': True},
     sentinel={
-        'enabled': True,
-        'content_filtering': True,
-        'pii_detection': True,
-        'compliance': ['gdpr', 'hipaa'],
-        'moderation_threshold': 0.8,
-        'action_on_violation': 'block'
+        "enabled": True,
+        "content_filtering": True,        # Toxicity, hate speech, profanity
+        "pii_detection": True,            # Emails, phones, SSNs, credit cards, IPs
+        "compliance": ["gdpr", "hipaa"],  # Compliance standards
+        "moderation_threshold": 0.8,      # Sensitivity (0.0–1.0)
+        "action_on_violation": "block",   # block | flag | redact | escalate
+        "log_violations": True,
+        "audit_enabled": True
     }
 )
-async def support_agent(ticket: str) -> str:
-    """Agent with enterprise-grade safety controls."""
-    # Sentinel automatically:
-    # - Filters toxic content
-    # - Detects and redacts PII
-    # - Enforces compliance rules
-    # - Blocks or flags violations
-    
-    return await handle_ticket(ticket)
+async def support_agent(query: str) -> str:
+    # Sentinel validates input before execution and output after
+    return await handle_query(query)
 ```
 
-**Features:**
-- ✅ Content moderation (toxicity, hate speech, profanity)
-- ✅ PII detection and redaction (email, phone, SSN, credit cards)
-- ✅ Compliance enforcement (GDPR, HIPAA, PCI_DSS, SOC2, CCPA)
-- ✅ Custom policy engine
-- ✅ Configurable actions (block, flag, redact, escalate)
-- ✅ Audit logging and violation tracking
+**PII Detection & Redaction:**
+
+| Type | Example | Redaction |
+|------|---------|-----------|
+| Email | `user@example.com` | `[EMAIL_REDACTED]` |
+| Phone (US) | `(555) 123-4567` | `[PHONE_REDACTED]` |
+| Phone (Intl) | `+1234567890` | `[PHONE_REDACTED]` |
+| SSN | `123-45-6789` | `[SSN_REDACTED]` |
+| Credit Card | `4111-1111-1111-1111` | `[CC_REDACTED]` |
+| IP Address | `192.168.1.1` | `[IP_REDACTED]` |
 
 **Compliance Standards:**
-- GDPR: Data minimization, PII protection, right to be forgotten
-- HIPAA: PHI protection, encryption requirements, access control
-- PCI_DSS: Credit card data protection, security requirements
-- SOC2: Security controls, availability, confidentiality
-- CCPA: Consumer privacy rights, data disclosure
+
+| Standard | Description |
+|----------|-------------|
+| `gdpr` | Data minimization, PII protection, right to erasure |
+| `hipaa` | PHI protection, access control, encryption |
+| `pci_dss` | Credit card data protection |
+| `soc2` | Security controls, availability, confidentiality |
+| `ccpa` | Consumer privacy rights, data disclosure |
+
+**Custom Policies:**
+
+```python
+from teleon.sentinel.policy_engine import PolicyEngine
+
+policy_engine = PolicyEngine()
+
+policy_engine.add_policy("no_competitors", {
+    "type": "regex",
+    "pattern": r"\b(CompetitorA|CompetitorB)\b",
+    "message": "Competitor mention not allowed",
+    "severity": "high"
+})
+
+policy_engine.add_policy("min_response_length", {
+    "type": "condition",
+    "condition": "len(text) < 50",
+    "message": "Response too short",
+    "severity": "low"
+})
+```
+
+**Audit Logging:**
+
+```python
+audit_logger = engine.get_audit_logger()
+
+stats = audit_logger.get_violation_stats(agent_id="my-agent")
+# {
+#   "total_violations": 42,
+#   "by_type": {"pii_detection": 30, "toxicity": 12},
+#   "by_action": {"block": 35, "flag": 7}
+# }
+
+json_export = audit_logger.export_audit_trail(format="json")
+csv_export = audit_logger.export_audit_trail(format="csv")
+```
+
+---
 
 ### 🎯 LLM Gateway: Multi-Provider Support
 
-Intelligent routing across multiple LLM providers.
+Intelligent routing across multiple LLM providers with caching and fallbacks.
 
 ```python
 from teleon.llm import LLMGateway
 from teleon.llm.providers import OpenAIProvider, AnthropicProvider
 
 gateway = LLMGateway()
-
-# Register providers
 gateway.register_provider(OpenAIProvider(api_key="..."))
 gateway.register_provider(AnthropicProvider(api_key="..."))
 
-@agent(
-    name="smart-router",
-    llm={
-        'strategy': 'cost_optimized',
-        'models': {
-            'simple': 'gpt-3.5-turbo',
-            'complex': 'gpt-4',
-            'reasoning': 'claude-3-opus'
-        },
-        'cache_enabled': True
-    }
+# Simple chat
+response = await gateway.chat(message="What is AI?", model="gpt-4")
+
+# Function calling
+response = await gateway.chat_with_functions(
+    message="Get weather in Paris",
+    functions=[get_weather_function],
+    model="gpt-4"
 )
-async def routing_agent(task: str, complexity: str) -> str:
-    """Automatically routes to best model for the task."""
-    # Gateway handles:
-    # - Model selection based on complexity
-    # - Cost optimization
-    # - Response caching
-    # - Fallback on errors
-    # - Rate limit management
-    
-    return await process_with_llm(task)
+
+# Streaming
+async for chunk in gateway.stream(message="Write a story", model="gpt-4"):
+    print(chunk, end="")
 ```
 
 **Supported Providers:**
+
 - OpenAI (GPT-4, GPT-3.5)
-- Anthropic (Claude 3)
+- Anthropic (Claude)
 - Google (Gemini)
 - Azure OpenAI
 - Groq, Cohere, Together AI
 - Local models (Ollama, LM Studio)
 
+---
+
 ### 🔧 Built-in Tools
 
 116+ production-ready tools across 7 categories.
-
-```python
-@agent(
-    name="tooled-agent",
-    tools=[
-        'http_request',
-        'web_scraper',
-        'send_email',
-        'sql_query',
-        'json_parser',
-        'csv_reader'
-    ]
-)
-async def tooled_agent(task: str) -> dict:
-    """Agent with access to multiple tools."""
-    # Tools are automatically available
-    # with proper error handling and retries
-    
-    return await execute_with_tools(task)
-```
-
-**Tool Categories:**
 
 | Category | Tools | Examples |
 |----------|-------|----------|
@@ -350,206 +482,164 @@ async def tooled_agent(task: str) -> dict:
 | **Analytics** | 8+ | Data analysis, visualization, reporting |
 | **Utilities** | 36+ | Text processing, math, datetime, crypto |
 
-### 📊 Observability
-
-Complete monitoring, tracing, and analytics.
-
 ```python
-@agent(
-    name="monitored-agent",
-    observability={
-        'tracing': True,
-        'metrics': True,
-        'logging': 'detailed'
-    }
+@client.agent(
+    name="tooled-agent",
+    tools=["http_request", "web_scraper", "send_email", "sql_query"]
 )
-async def monitored_agent(input: str) -> str:
-    """Fully observable agent."""
-    # Automatic instrumentation:
-    # ✅ Distributed tracing
-    # ✅ Performance metrics
-    # ✅ Cost tracking
-    # ✅ Error reporting
-    # ✅ Custom events
-    
-    return await process(input)
+async def tooled_agent(task: str) -> dict:
+    return await execute_with_tools(task)
 ```
-
-**Built-in Dashboards:**
-- Real-time agent performance
-- Cost analytics and budgets
-- Error rates and types
-- Response time distribution
-- Memory usage and patterns
-- Multi-agent workflows
 
 ---
 
-## 📚 Comprehensive Examples
+### 📊 Observability
 
-### Customer Support Bot
+Complete monitoring, tracing, and analytics out of the box.
 
 ```python
-from teleon import agent, TeleonClient
-
-client = TeleonClient(api_key="tlk_live_...")
-
 @client.agent(
-    name="support-bot",
-    model="gpt-4",
-    memory=True,
-    tools=['sql_query', 'send_email', 'slack_message']
-)
-async def support_bot(
-    customer_message: str,
-    customer_id: str
-) -> dict:
-    """Intelligent customer support agent."""
-    
-    # Check memory for customer history
-    history = await memory.episodic.get_recent(
-        filter={'customer_id': customer_id},
-        limit=5
-    )
-    
-    # Search knowledge base for similar issues
-    similar_tickets = await memory.semantic.search(
-        customer_message,
-        category='resolved_tickets',
-        limit=3
-    )
-    
-    if similar_tickets:
-        # Reuse successful resolution
-        solution = adapt_solution(similar_tickets[0])
-    else:
-        # Generate new solution
-        solution = await llm.chat(
-            f"Resolve: {customer_message}\nHistory: {history}",
-            model='gpt-4'
-        )
-    
-    # Notify team if escalation needed
-    if solution.get('escalate'):
-        await tools.slack_message(
-            channel='#support-escalations',
-            message=f"Ticket {customer_id} needs attention"
-        )
-    
-    return {
-        'status': 'resolved',
-        'solution': solution,
-        'confidence': solution.get('confidence', 0.0)
+    name="monitored-agent",
+    observability={
+        "tracing": True,
+        "metrics": True,
+        "logging": "detailed"
     }
+)
+async def monitored_agent(input: str) -> str:
+    return await process(input)
 ```
 
-### Data Analysis Pipeline
+Production metrics reporting:
 
 ```python
-@agent(
-    name="data-analyst",
-    tools=['csv_reader', 'data_transformer', 'chart_generator'],
-    memory={'type': 'semantic'}
+from teleon.helix import init_agent_reporter
+
+reporter = await init_agent_reporter(
+    deployment_id="deploy-123",
+    api_key="tlk_xxx",
+    flush_interval=10.0
 )
-async def data_analyst(dataset_url: str) -> dict:
-    """Automated data analysis agent."""
-    
-    # Download and read data
-    data = await tools.csv_reader(url=dataset_url)
-    
-    # Run analyses in parallel
-    results = await asyncio.gather(
-        tools.statistical_analysis(data),
-        tools.correlation_analysis(data),
-        tools.outlier_detection(data),
-        tools.trend_analysis(data)
+
+await reporter.report_request(
+    input_tokens=100,
+    output_tokens=50,
+    latency_ms=250.5,
+    model="gpt-4",
+    success=True,
+    cost=0.002
+)
+```
+
+---
+
+## 📚 Examples
+
+### Customer Support Agent
+
+```python
+@client.agent(
+    name="support-bot",
+    cortex={
+        "auto": True,
+        "scope": ["customer_id"],
+        "auto_context": {"enabled": True, "history_limit": 20, "relevant_limit": 5}
+    },
+    helix={"min_instances": 2, "max_instances": 10},
+    sentinel={"pii_detection": True, "action_on_violation": "redact"},
+    tools=["sql_query", "send_email", "slack_message"]
+)
+async def support_bot(query: str, customer_id: str, cortex) -> dict:
+    # Auto-context injects relevant history before execution
+    context = cortex.context.text if cortex.context else ""
+
+    similar = await cortex.search(query=query, filter={"type": "resolution"}, limit=3)
+
+    response = await llm.chat(
+        f"Customer query: {query}\nContext: {context}\nSimilar resolutions: {similar}"
     )
-    
-    # Generate insights with LLM
-    insights = await llm.chat(
-        f"Analyze these results: {results}",
-        model='gpt-4'
-    )
-    
-    # Create visualizations
-    charts = await tools.chart_generator(
-        data=data,
-        chart_types=['line', 'scatter', 'heatmap']
-    )
-    
-    # Store in knowledge base
-    await memory.semantic.store(
-        content=insights,
-        metadata={'dataset': dataset_url},
-        category='analysis_results'
-    )
-    
-    return {
-        'statistics': results[0],
-        'correlations': results[1],
-        'outliers': results[2],
-        'trends': results[3],
-        'insights': insights,
-        'charts': charts
+
+    if "resolved" in response.lower():
+        await cortex.store(
+            content=f"Resolved: {query} -> {response}",
+            type="resolution"
+        )
+
+    return {"status": "resolved", "response": response}
+```
+
+### Healthcare Agent (HIPAA)
+
+```python
+@client.agent(
+    name="healthcare-assistant",
+    sentinel={
+        "pii_detection": True,
+        "compliance": ["hipaa", "gdpr"],
+        "action_on_violation": "block",
+        "audit_enabled": True
     }
+)
+async def healthcare_agent(query: str, patient_id: str):
+    # All PHI is blocked; every violation is logged for HIPAA audit
+    return await generate_response(query)
+```
+
+### Payment Processing (PCI DSS)
+
+```python
+@client.agent(
+    name="payments",
+    sentinel={
+        "pii_detection": True,
+        "compliance": ["pci_dss"],
+        "action_on_violation": "block"
+    }
+)
+async def payment_agent(request: dict):
+    return await process_payment(request)
 ```
 
 ### Multi-Agent Research System
 
 ```python
-# Agent 1: Data Collector
-@agent(
-    name="data-collector",
-    tools=['web_scraper', 'http_request']
-)
+@client.agent(name="data-collector", tools=["web_scraper", "http_request"])
 async def data_collector(topic: str) -> dict:
-    """Collects data from multiple sources."""
-    sources = [
-        f"https://api.source1.com/search?q={topic}",
-        f"https://api.source2.com/search?q={topic}",
-    ]
-    
-    data = []
-    for source in sources:
-        result = await tools.http_request(url=source)
-        data.append(result)
-    
-    return {'data': data, 'sources': len(sources)}
+    results = []
+    for source in get_sources(topic):
+        results.append(await tools.http_request(url=source))
+    return {"data": results}
 
-
-# Agent 2: Analyzer
-@agent(
-    name="analyzer",
-    model="gpt-4"
-)
+@client.agent(name="analyzer", model="gpt-4")
 async def analyzer(data: dict) -> dict:
-    """Analyzes collected data."""
-    analysis = await llm.chat(
-        f"Analyze this data: {data}",
-        model='gpt-4'
-    )
-    
-    return {'analysis': analysis}
+    analysis = await llm.chat(f"Analyze this data: {data}", model="gpt-4")
+    return {"analysis": analysis}
 
-
-# Agent 3: Orchestrator
-@agent(
-    name="research-orchestrator"
-)
+@client.agent(name="research-orchestrator")
 async def orchestrator(research_topic: str) -> dict:
-    """Coordinates research across multiple agents."""
-    
-    # Collect data
     data_result = await data_collector(research_topic)
-    
-    # Analyze data
     analysis_result = await analyzer(data_result)
-    
-    return {
-        'topic': research_topic,
-        'data_sources': data_result['sources'],
-        'analysis': analysis_result['analysis']
-    }
+    return {"topic": research_topic, "analysis": analysis_result["analysis"]}
+```
+
+### Session Chat with TTL
+
+```python
+@client.agent(
+    name="chat",
+    cortex={"scope": ["session_id"], "auto": False}
+)
+async def chat_agent(message: str, session_id: str, cortex):
+    context = await cortex.get(filter={}, limit=10)
+    response = await llm.chat(message, context)
+
+    # Expire session memory after 1 hour
+    await cortex.store(
+        content=f"User: {message}\nAssistant: {response}",
+        type="message",
+        ttl=3600
+    )
+    return response
 ```
 
 ### Scheduled Tasks & Webhooks
@@ -558,29 +648,22 @@ async def orchestrator(research_topic: str) -> dict:
 from teleon.scheduler import schedule
 from teleon.webhooks import webhook
 
-# Scheduled agent
-@agent(name="daily-report")
-@schedule(cron="0 9 * * *")  # Every day at 9 AM
+@client.agent(name="daily-report")
+@schedule(cron="0 9 * * *")
 async def daily_report() -> dict:
-    """Generate daily report automatically."""
     metrics = await gather_daily_metrics()
     report = await generate_report(metrics)
     await send_email_report(report)
-    
-    return {'status': 'sent', 'metrics': metrics}
+    return {"status": "sent"}
 
-
-# Webhook-triggered agent
-@agent(name="github-bot")
+@client.agent(name="github-bot")
 @webhook(path="/github", methods=["POST"])
 async def github_bot(event: dict) -> dict:
-    """Respond to GitHub webhooks."""
-    if event['type'] == 'pull_request':
-        await review_pr(event['pr_number'])
-    elif event['type'] == 'issue':
-        await triage_issue(event['issue_number'])
-    
-    return {'status': 'processed'}
+    if event["type"] == "pull_request":
+        await review_pr(event["pr_number"])
+    elif event["type"] == "issue":
+        await triage_issue(event["issue_number"])
+    return {"status": "processed"}
 ```
 
 ---
@@ -590,62 +673,34 @@ async def github_bot(event: dict) -> dict:
 ### Local Development
 
 ```bash
-# Start development server
-teleon dev
-
-# Hot reload enabled
-# Dashboard at http://localhost:8000/dashboard
+teleon dev          # Hot reload enabled
+                    # Dashboard at http://localhost:8000/dashboard
 ```
 
 ### Teleon Cloud (Managed)
 
 ```bash
-# Deploy to Teleon Cloud
-teleon deploy
-
-# Features:
-# ✅ Fully managed infrastructure
-# ✅ Auto-scaling
-# ✅ Global CDN
-# ✅ 99.99% uptime SLA
-# ✅ Built-in monitoring
+teleon deploy       # Fully managed, auto-scaling, 99.99% uptime SLA
 ```
 
 ### Self-Hosted (Docker)
 
 ```bash
-# Using docker-compose
-docker-compose up -d
-
-# Includes:
-# - Teleon platform
-# - PostgreSQL
-# - Redis
-# - ChromaDB
-# - Prometheus
-# - Grafana
+docker-compose up -d   # Includes Teleon, PostgreSQL, Redis, Prometheus, Grafana
 ```
 
 ### Kubernetes
 
 ```bash
-# Deploy to Kubernetes
 teleon deploy --platform kubernetes
-
-# Helm chart included
 helm install teleon ./teleon-chart
 ```
 
 ### Cloud Providers
 
 ```bash
-# AWS
 teleon deploy --platform aws --region us-east-1
-
-# Azure
 teleon deploy --platform azure --region eastus
-
-# GCP
 teleon deploy --platform gcp --region us-central1
 ```
 
@@ -656,214 +711,162 @@ teleon deploy --platform gcp --region us-central1
 ### Agent Management
 
 ```bash
-# List all agents
 teleon agents list
-
-# Inspect agent
 teleon agents inspect <agent-id>
-
-# View logs
 teleon agents logs <agent-id> --tail 100
-
-# Execute agent
 teleon agents exec <agent-name> --input '{"key": "value"}'
-
-# Delete agent
 teleon agents delete <agent-id>
 ```
 
 ### Helix (Runtime)
 
 ```bash
-# View runtime status
 teleon helix status
-
-# Scale agent
 teleon helix scale <agent-id> --replicas 10
-
-# Health check
 teleon helix health <agent-id>
 ```
 
 ### Cortex (Memory)
 
 ```bash
-# View memory stats
 teleon cortex stats <agent-id>
-
-# Query memory
 teleon cortex query <agent-id> --query "customer issues"
-
-# Clear memory
 teleon cortex clear <agent-id> --type episodic
 ```
 
 ### Sentinel (Safety & Compliance)
 
 ```bash
-# View Sentinel status
 teleon sentinel status
-
-# List violations for an agent
 teleon sentinel violations <agent-id>
-
-# Test validation on input
 teleon sentinel test <agent-id> --input "test@example.com"
-
-# View Sentinel configuration
 teleon sentinel config <agent-id>
-
-# Export audit log
 teleon sentinel audit <agent-id> --format json
 ```
 
 ### Development
 
 ```bash
-# Start dev server
 teleon dev [file]
-
-# Run tests
 teleon test
-
-# Type checking
 teleon check
-
-# Generate docs
 teleon docs generate
 ```
 
 ---
 
-## 📖 API Documentation
+## 📖 API Reference
 
-### Core Decorators
-
-#### `@agent`
-
-```python
-@agent(
-    name: str,                    # Agent name (required)
-    description: str = None,      # Agent description
-    model: str = "gpt-3.5-turbo", # Default LLM model
-    temperature: float = 0.7,     # LLM temperature
-    memory: bool | dict = False,  # Enable memory
-    tools: list[str] = None,      # Available tools
-    helix: dict = None,          # Helix configuration
-    cortex: dict = None,         # Cortex configuration
-    observability: dict = None,  # Observability settings
-)
-```
-
-#### `@tool`
-
-```python
-from teleon import tool
-
-@tool(
-    name="my_custom_tool",
-    description="Tool description",
-    parameters={
-        "param1": {"type": "string", "description": "..."},
-        "param2": {"type": "number", "description": "..."}
-    }
-)
-async def my_custom_tool(param1: str, param2: int) -> dict:
-    """Custom tool implementation."""
-    return {"result": "success"}
-```
-
-### TeleonClient
+### `TeleonClient`
 
 ```python
 from teleon import TeleonClient
 
-# Initialize client
 client = TeleonClient(
     api_key="tlk_live_...",
-    environment="production",  # or "staging", "dev"
-    base_url=None,  # Optional custom URL
+    environment="production",  # "production" | "staging" | "dev"
+    base_url=None,
     verify_key=True
 )
-
-# Register agent
-@client.agent(name="my-agent")
-async def my_agent(input: str) -> str:
-    return "response"
-
-# List agents
-agents = client.list_agents()
-
-# Get agent
-agent = client.get_agent(agent_id)
-
-# Execute agent
-result = await client.execute_agent(agent_id, input_data)
 ```
 
-### Memory API
+### `@client.agent` Decorator
 
 ```python
-from teleon.memory import Memory
-
-memory = Memory(agent_id)
-
-# Episodic Memory (events)
-await memory.episodic.store(
-    event="user_query",
-    data={"query": "...", "response": "..."},
-    metadata={"user_id": "123"}
-)
-
-episodes = await memory.episodic.get_recent(limit=10)
-
-# Semantic Memory (knowledge)
-await memory.semantic.store(
-    content="Python is a programming language",
-    category="programming",
-    metadata={"source": "wikipedia"}
-)
-
-results = await memory.semantic.search(
-    query="What is Python?",
-    limit=5,
-    min_similarity=0.7
-)
-
-# Procedural Memory (patterns)
-patterns = await memory.procedural.get_patterns(
-    context="customer_support",
-    min_success_rate=0.6
+@client.agent(
+    name: str,                    # Agent name (required)
+    description: str = None,
+    model: str = "gpt-3.5-turbo",
+    temperature: float = 0.7,
+    tools: list[str] = None,
+    helix: bool | dict = None,    # Helix runtime config
+    cortex: bool | dict = False,  # Cortex memory config
+    sentinel: bool | dict = None, # Sentinel safety config
+    observability: dict = None,
 )
 ```
 
-### LLM Gateway
+### Cortex Memory API
 
 ```python
-from teleon.llm import LLMGateway
+# store
+entry_id = await cortex.store(content="...", ttl=3600, upsert=True, **custom_fields)
 
-gateway = LLMGateway()
+# search (semantic)
+results = await cortex.search(query="...", filter={"field": "value"}, limit=10)
 
-# Simple chat
-response = await gateway.chat(
-    message="What is AI?",
-    model="gpt-4",
-    temperature=0.7
+# get (filter only, no semantic)
+entries = await cortex.get(filter={"field": "value"}, limit=50)
+
+# update
+count = await cortex.update(filter={"field": "value"}, content="new", **new_fields)
+
+# delete
+deleted = await cortex.delete(filter={"user_id": "alice"})
+
+# count
+n = await cortex.count(filter={"type": "query"})
+
+# auto-injected context
+cortex.context.entries   # List of Entry objects
+cortex.context.text      # Formatted text for LLM injection
+```
+
+**Entry Object:**
+
+```python
+entry.id          # Unique identifier
+entry.content     # Text content
+entry.fields      # Dict of all custom fields
+entry.created_at  # Creation timestamp
+entry.updated_at  # Last update timestamp
+entry.expires_at  # Expiration (if TTL set)
+entry.score       # Relevance score (search only)
+```
+
+### Helix Runtime API
+
+```python
+from teleon.helix import AgentRuntime, RuntimeConfig, ResourceConfig
+
+runtime = AgentRuntime(RuntimeConfig(environment="production", max_workers=20))
+
+# Standard agent
+await runtime.register_agent(agent_id, agent_callable, resources=ResourceConfig(...))
+
+# LLM agent with cost tracking
+await runtime.register_llm_agent(agent_id, agent_callable, model="gpt-4", cost_budget=10.0)
+
+await runtime.start_agent("my-agent")
+await runtime.stop_agent("my-agent", force=False)
+await runtime.scale_agent("my-agent", instances=5)
+
+status = await runtime.get_agent_status("my-agent")
+# {"status": "running", "instances": 3, "health": "healthy", ...}
+```
+
+### Sentinel API
+
+```python
+from teleon.sentinel import SentinelEngine, SentinelConfig, ComplianceStandard, GuardrailAction
+
+config = SentinelConfig(
+    enabled=True,
+    content_filtering=True,
+    pii_detection=True,
+    compliance=[ComplianceStandard.GDPR, ComplianceStandard.HIPAA],
+    action_on_violation=GuardrailAction.BLOCK
 )
 
-# Function calling
-response = await gateway.chat_with_functions(
-    message="Get weather in Paris",
-    functions=[get_weather_function],
-    model="gpt-4"
-)
+engine = SentinelEngine(config)
 
-# Streaming
-async for chunk in gateway.stream(
-    message="Write a story",
-    model="gpt-4"
-):
-    print(chunk, end="")
+result = await engine.validate_input(user_input, agent_name="my-agent")
+result = await engine.validate_output(agent_output, agent_name="my-agent")
+
+result.passed             # bool
+result.action             # GuardrailAction
+result.violations         # List[Dict]
+result.redacted_content   # Optional[str]
 ```
 
 ---
@@ -873,103 +876,50 @@ async for chunk in gateway.stream(
 ### Cloud Providers
 
 ```python
-# Azure
-from teleon.integrations.azure import (
-    AzureOpenAIProvider,
-    AzureKeyVaultClient,
-    AzureStorageClient,
-    AzureCosmosDBClient
-)
-
-# AWS
-from teleon.integrations.aws import (
-    BedrockProvider,
-    S3Client,
-    DynamoDBClient,
-    SecretsManagerClient
-)
-
-# GCP
-from teleon.integrations.gcp import (
-    VertexAIProvider,
-    CloudStorageClient,
-    FirestoreClient
-)
+from teleon.integrations.azure import AzureOpenAIProvider, AzureStorageClient
+from teleon.integrations.aws import BedrockProvider, S3Client, DynamoDBClient
+from teleon.integrations.gcp import VertexAIProvider, CloudStorageClient
 ```
 
 ### Communication
 
 ```python
-# Slack
 from teleon.integrations.slack import SlackClient
-
-slack = SlackClient(token="...")
-await slack.post_message(channel="#general", text="Hello!")
-
-# Discord
 from teleon.integrations.discord import DiscordClient
-
-discord = DiscordClient(token="...")
-await discord.send_message(channel_id="...", content="Hello!")
-
-# Email
 from teleon.integrations.email import EmailClient
-
-email = EmailClient(smtp_config)
-await email.send(to="user@example.com", subject="...", body="...")
 ```
 
 ### Databases
 
 ```python
-# PostgreSQL
-from teleon.integrations.database import PostgresClient
-
-db = PostgresClient(connection_string)
-results = await db.query("SELECT * FROM users WHERE id = $1", [user_id])
-
-# MongoDB
-from teleon.integrations.database import MongoClient
-
-mongo = MongoClient(connection_string)
-docs = await mongo.find("users", {"status": "active"})
-
-# Redis
+from teleon.integrations.database import PostgresClient, MongoClient
 from teleon.integrations.cache import RedisClient
-
-redis = RedisClient(connection_string)
-await redis.set("key", "value", expire=3600)
 ```
 
 ---
 
 ## 🧪 Testing
 
-### Test Framework
-
 ```python
 from teleon.testing import AgentTestCase, MockLLM, MockTool
 
 class TestMyAgent(AgentTestCase):
     async def test_agent_response(self):
-        """Test agent with mocked LLM."""
         with MockLLM(response="Mocked response"):
             result = await my_agent("test input")
             assert result == "Mocked response"
-    
+
     async def test_agent_with_tools(self):
-        """Test agent with mocked tools."""
         with MockTool("http_request", return_value={"status": 200}):
             result = await my_agent("fetch data")
             assert "status" in result
 ```
 
-### Load Testing
+Load testing:
 
 ```python
 from teleon.testing import load_test
 
-# Load test an agent
 results = await load_test(
     agent=my_agent,
     input_generator=lambda: {"query": "test"},
@@ -986,8 +936,6 @@ print(f"Error rate: {results.error_rate}%")
 
 ## 📊 Performance
 
-### Benchmarks
-
 | Metric | Target | Achieved |
 |--------|--------|----------|
 | API P99 Latency | < 100ms | 87ms |
@@ -997,31 +945,23 @@ print(f"Error rate: {results.error_rate}%")
 | Throughput (API) | 10K req/s | 12.5K req/s |
 | Throughput (Agent) | 1K exec/s | 1.3K exec/s |
 
-### Cost Optimization
-
-Teleon automatically optimizes costs:
-
-- **40% reduction** through response caching
-- **30% reduction** through intelligent model routing
-- **25% reduction** through learned patterns (Cortex)
-- **Overall: 60-70% cost savings** compared to naive implementations
-
 ---
 
 ## 🗺️ Roadmap
 
 ### ✅ Completed (v0.1.0)
 
-- Core `@agent` decorator
+- Core `@client.agent` decorator
 - LLM Gateway with multi-provider support
 - 116+ built-in tools
-- Helix runtime with auto-scaling
-- Cortex memory system (4 types)
+- **Helix** – Auto-scaling runtime, health checks, token tracking, response caching, batch processing
+- **Cortex** – Unified memory API (6 methods), scope enforcement, memory layers, auto-context injection, PostgreSQL + Redis backends
+- **Sentinel** – Content filtering, PII detection, compliance enforcement (GDPR, HIPAA, PCI_DSS, SOC2, CCPA), custom policies, audit logging
 - CLI and development server
 - Testing framework
 - Azure, AWS, GCP integrations
 
-### 🚧 In Progress (v0.2.0 - Q2 2025)
+### 🚧 In Progress (v0.2.0 – Q2 2025)
 
 - Enhanced observability dashboards
 - Advanced workflow engine
@@ -1030,7 +970,7 @@ Teleon automatically optimizes costs:
 - Mobile app for monitoring
 - Enhanced security features
 
-### 🔮 Planned (v0.3.0 - Q3 2025)
+### 🔮 Planned (v0.3.0 – Q3 2025)
 
 - Visual agent builder (no-code)
 - Multi-modal agent support
@@ -1045,85 +985,37 @@ Teleon automatically optimizes costs:
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
-### Development Setup
-
 ```bash
-# Clone repository
 git clone https://github.com/teleonAI/teleon.git
 cd teleon
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
-
-# Run tests
 pytest
-
-# Format code
-black teleon/
-isort teleon/
-
-# Type checking
+black teleon/ && isort teleon/
 mypy teleon/
 ```
 
-### Code Standards
-
-- Python 3.11+ with type hints
-- Black for formatting (line length: 100)
-- isort for import sorting
-- mypy for type checking
-- pytest for testing (80%+ coverage required)
-- Conventional commits
+**Code Standards:** Python 3.11+ · Black (100 char) · isort · mypy · pytest (80%+ coverage) · Conventional commits
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **Apache License 2.0** - see the [LICENSE](LICENSE) file for details.
-
-```
-Copyright 2025 Teleon AI, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-```
+Licensed under the **Apache License 2.0** – see [LICENSE](LICENSE) for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
-Teleon is built with amazing open-source tools:
-
-- **FastAPI** - High-performance web framework
-- **Pydantic** - Data validation
-- **ChromaDB** - Vector database
-- **PostgreSQL** - Primary database
-- **Redis** - Caching and queues
-- **OpenTelemetry** - Observability
-- **Docker** & **Kubernetes** - Container orchestration
-
-Special thanks to the AI/ML community and all our contributors!
+Built with: **FastAPI** · **Pydantic** · **ChromaDB** · **PostgreSQL** · **Redis** · **OpenTelemetry** · **Docker** · **Kubernetes**
 
 ---
 
 ## 📞 Support & Community
 
 - **Documentation**: [docs.teleon.ai](https://docs.teleon.ai)
-- **Discord**: [Join our community](https://discord.gg/teleon)
-- **Twitter**: [@teleon_ai](https://twitter.com/teleon_ai)
+- **Discord**: [Join our community](https://discord.gg/)
+- **Twitter**: [@Teleon_AI](https://twitter.com/Teleon_AI)
 - **Email**: founders@teleon.ai
 - **GitHub Issues**: [Report bugs](https://github.com/teleonAI/teleon/issues)
 - **Discussions**: [Ask questions](https://github.com/teleonAI/teleon/discussions)
@@ -1133,33 +1025,12 @@ Special thanks to the AI/ML community and all our contributors!
 ## 📚 Additional Resources
 
 - [Getting Started Guide](docs/getting-started/)
+- [Cortex Memory Docs](docs/cortex/)
+- [Helix Runtime Docs](docs/helix/)
+- [Sentinel Safety Docs](docs/sentinel/)
 - [API Reference](docs/api-reference/)
-- [Architecture Overview](TECHNICAL_ARCHITECTURE.md)
-- [Examples](./examples/)
 - [Deployment Guide](docs/guides/deployment.md)
-- [Best Practices](docs/guides/best-practices.md)
 - [Security Guide](docs/guides/security.md)
-- [Migration Guide](docs/guides/migration.md)
-
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=teleonAI/teleon&type=Date)](https://star-history.com/#teleonAI/teleon&Date)
-
----
-
-## 🚀 Join the AI Agent Revolution
-
-**Ready to build production-ready AI agents?**
-
-```bash
-pip install teleon
-teleon init
-teleon deploy
-```
-
-⭐ **Star this repo** to stay updated with the latest features!
 
 ---
 
@@ -1167,6 +1038,6 @@ teleon deploy
 
 **Made with ❤️ by the Teleon team**
 
-[Website](https://teleon.ai) • [Docs](https://docs.teleon.ai) • [Discord](https://discord.gg/teleon) • [Twitter](https://twitter.com/teleon_ai)
+[Website](https://teleon.ai) • [Docs](https://docs.teleon.ai) • [Discord](https://discord.gg/) • [Twitter](https://twitter.com/Teleon_AI)
 
 </div>
