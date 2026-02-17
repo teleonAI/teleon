@@ -17,15 +17,16 @@ import secrets
 import time
 import uuid
 import logging
+import urllib.parse
 from collections import deque, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
-from fastapi import FastAPI, HTTPException, Header, Request, Response
+from fastapi import FastAPI, HTTPException, Header, Request, Response, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -44,8 +45,8 @@ class AgentRequest(BaseModel):
     """Request to an agent (shared endpoint)."""
     agent_name: str
     input: Any  # Can be string or dict with agent parameters
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 500
+    temperature: float = 0.7
+    max_tokens: int = 500
 
 
 class IndividualAgentRequest(BaseModel):
@@ -113,6 +114,14 @@ def create_dev_server(
     
     # Dev mode check - these keys only work when TELEON_ENV is 'development' or not set
     is_dev_mode = os.getenv("TELEON_ENV", "development").lower() in ["development", "dev", "local"]
+
+    require_login = os.getenv("TELEON_DEV_SERVER_REQUIRE_LOGIN", "").strip().lower() in ["1", "true", "yes", "on"]
+    require_login = require_login or (not is_dev_mode)
+
+    platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
+    auth_cookie_name = os.getenv("TELEON_DEV_SERVER_AUTH_COOKIE", "teleon_auth_token")
+    auth_cache_ttl_seconds = int(os.getenv("TELEON_DEV_SERVER_AUTH_CACHE_TTL", "300"))
+    auth_validation_cache: Dict[str, dict] = {}
 
     # Request history for debugging (max 500 entries)
     request_history = deque(maxlen=500)
@@ -253,6 +262,73 @@ def create_dev_server(
             return response
     
     app.add_middleware(RequestCaptureMiddleware)
+
+    async def validate_platform_api_key(api_key: str) -> Optional[dict]:
+        api_key = (api_key or "").strip()
+        if not api_key:
+            return None
+
+        now = datetime.now(timezone.utc)
+        cached = auth_validation_cache.get(api_key)
+        if cached and cached.get("expires_at") and cached["expires_at"] > now:
+            return cached.get("data")
+
+        if not HTTPX_AVAILABLE:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{platform_url}/api/v1/api-keys/validate",
+                    headers={"X-API-Key": api_key},
+                )
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            auth_validation_cache[api_key] = {
+                "expires_at": now + timedelta(seconds=auth_cache_ttl_seconds),
+                "data": data,
+            }
+            return data
+        except Exception:
+            return None
+
+    def extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+        if not authorization:
+            return None
+        if authorization.startswith("Bearer "):
+            return authorization.replace("Bearer ", "", 1).strip()
+        return None
+
+    class PlatformAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            if not require_login:
+                return await call_next(request)
+
+            path = request.url.path
+            if path.startswith("/login") or path.startswith("/logout") or path == "/health":
+                return await call_next(request)
+
+            token = request.cookies.get(auth_cookie_name)
+            if not token:
+                token = extract_bearer_token(request.headers.get("authorization"))
+
+            valid = await validate_platform_api_key(token) if token else None
+            if valid:
+                return await call_next(request)
+
+            accept = request.headers.get("accept", "")
+            wants_html = "text/html" in accept
+            if wants_html and request.method == "GET":
+                next_url = request.url.path
+                if request.url.query:
+                    next_url = f"{next_url}?{request.url.query}"
+                return RedirectResponse(url=f"/login?next={urllib.parse.quote(next_url)}", status_code=302)
+
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+    app.add_middleware(PlatformAuthMiddleware)
 
     def verify_api_key(api_key: str) -> bool:
         """
@@ -502,6 +578,68 @@ curl -X POST http://localhost:8000/invoke \\
         </body>
         </html>
         """)
+
+    @app.get("/login")
+    async def login_page(next: str = "/"):
+        next = next or "/"
+        safe_next = next if next.startswith("/") else "/"
+        return HTMLResponse(
+            content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Teleon Login</title>
+                <style>
+                    body {{ font-family: -apple-system, sans-serif; background: #000; color: #e0e0e0; padding: 40px; }}
+                    h1 {{ color: #00d4ff; }}
+                    .box {{ background: #0a0a0a; border: 1px solid #333; padding: 24px; border-radius: 10px; max-width: 520px; }}
+                    input {{ background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin: 12px 0; }}
+                    button {{ background: #00d4ff; color: #000; border: none; padding: 12px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }}
+                    button:hover {{ background: #00aacc; }}
+                    .hint {{ color: #999; font-size: 13px; line-height: 1.5; }}
+                </style>
+            </head>
+            <body>
+                <h1>🔐 Teleon Login</h1>
+                <div class="box">
+                    <form method="post" action="/login">
+                        <input type="hidden" name="next" value="{safe_next}" />
+                        <label for="api_key">Teleon API Key</label>
+                        <input id="api_key" name="api_key" type="password" placeholder="tlk_live_..." autocomplete="current-password" />
+                        <button type="submit">Sign in</button>
+                    </form>
+                    <p class="hint">Use the same API key you use for <code>teleon login</code>. You can create/manage keys in the Teleon dashboard.</p>
+                </div>
+            </body>
+            </html>
+            """,
+            status_code=200,
+        )
+
+    @app.post("/login")
+    async def login_submit(request: Request, api_key: str = Form(""), next: str = Form("/")):
+        next = next or "/"
+        safe_next = next if next.startswith("/") else "/"
+        valid = await validate_platform_api_key(api_key)
+        if not valid:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        resp = RedirectResponse(url=safe_next, status_code=302)
+        is_https = request.url.scheme == "https"
+        resp.set_cookie(
+            auth_cookie_name,
+            api_key,
+            httponly=True,
+            secure=is_https,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 7,
+        )
+        return resp
+
+    @app.get("/logout")
+    async def logout():
+        resp = RedirectResponse(url="/login", status_code=302)
+        resp.delete_cookie(auth_cookie_name)
+        return resp
 
     @app.get("/health")
     async def health():
