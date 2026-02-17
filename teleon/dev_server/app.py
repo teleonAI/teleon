@@ -301,9 +301,21 @@ def create_dev_server(
             return authorization.replace("Bearer ", "", 1).strip()
         return None
 
+    def is_local_host(host: str) -> bool:
+        if not host:
+            return True
+        host = host.lower().strip()
+        host = host.split(":", 1)[0]
+        return host in {"localhost", "127.0.0.1", "0.0.0.0"}
+
     class PlatformAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            if not require_login:
+            forwarded_host = request.headers.get("x-forwarded-host")
+            host = forwarded_host or request.headers.get("host") or ""
+            deployed_host = (not is_local_host(host))
+            enforce_login = require_login or deployed_host
+
+            if not enforce_login:
                 return await call_next(request)
 
             path = request.url.path
@@ -579,6 +591,7 @@ curl -X POST http://localhost:8000/invoke \\
         </html>
         """
 
+        template = template.replace("{{", "{").replace("}}", "}")
         content = (
             template
             .replace("__AGENTS_COUNT__", str(len(discovered_agents)))
@@ -657,6 +670,7 @@ curl -X POST http://localhost:8000/invoke \\
             </html>
             """
 
+        template = template.replace("{{", "{").replace("}}", "}")
         content = template.replace("__SAFE_NEXT__", safe_next)
         return HTMLResponse(content=content, status_code=200)
 
@@ -1171,6 +1185,7 @@ curl -X POST http://localhost:8000/invoke \\
 
         """
 
+        template = template.replace("{{", "{").replace("}}", "}")
         content = (
             template
             .replace("__DEV_MODE_WARNING__", dev_mode_warning)
@@ -2057,6 +2072,7 @@ curl -X POST http://localhost:8000/invoke \\
         </html>
         """
 
+        template = template.replace("{{", "{").replace("}}", "}")
         content = template.replace("__AGENTS_OPTIONS__", agents_options)
         return HTMLResponse(content=content)
 
