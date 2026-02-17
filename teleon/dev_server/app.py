@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
-from fastapi import FastAPI, HTTPException, Header, Request, Response, Form
+from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -374,7 +374,7 @@ def create_dev_server(
             </div>
             ''' for agent_id, agent_info in discovered_agents.items()])
         
-        return HTMLResponse(content=f"""
+        template = """
         <!DOCTYPE html>
         <html>
         <head>
@@ -413,7 +413,7 @@ def create_dev_server(
         </head>
         <body>
             <h1>🚀 Teleon Dev Server</h1>
-            <p><strong>{len(discovered_agents)}</strong> agents discovered automatically</p>
+            <p><strong>__AGENTS_COUNT__</strong> agents discovered automatically</p>
 
             <div class="dev-warning">
                 ⚠️ <strong>DEVELOPMENT MODE:</strong> This server is for local development only. API keys generated here are for testing purposes and will not work in production.
@@ -461,7 +461,7 @@ def create_dev_server(
                 </a>
             </div>
 
-            {no_agents_msg if not discovered_agents else ''}
+            __NO_AGENTS_MSG__
 
             <h2>Available Methods:</h2>
             <div class="agent">
@@ -479,7 +479,7 @@ def create_dev_server(
             </div>
 
             <h2>Discovered Agents:</h2>
-            {agents_html}
+            __AGENTS_HTML__
 
             <h2>System Endpoints:</h2>
             <ul>
@@ -490,19 +490,19 @@ def create_dev_server(
             </ul>
 
             <script>
-                async function generateTestKey() {{
+                async function generateTestKey() {
                     const keyName = document.getElementById('keyName').value || 'Test Key';
                     const resultDiv = document.getElementById('apiKeyResult');
 
-                    try {{
-                        const response = await fetch('/api-keys', {{
+                    try {
+                        const response = await fetch('/api-keys', {
                             method: 'POST',
-                            headers: {{ 'Content-Type': 'application/json' }},
-                            body: JSON.stringify({{ 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
                                 name: keyName,
                                 description: 'Dev-only test API key'
-                            }})
-                        }});
+                            })
+                        });
 
                         const data = await response.json();
                         
@@ -510,81 +510,88 @@ def create_dev_server(
                         resultDiv.style.display = 'block';
                         resultDiv.innerHTML = `
                             <p><strong>✓ Test API Key Generated!</strong></p>
-                            <p><strong>Name:</strong> ${{data.name}}</p>
+                            <p><strong>Name:</strong> ${data.name}</p>
                             <p><strong>Your API Key:</strong></p>
-                            <div class="key-display">${{data.api_key}}</div>
+                            <div class="key-display">${data.api_key}</div>
                             <p><em>⚠️ Save this key - you won't see it again! This key only works in development mode.</em></p>
                             <p style="margin-top: 15px;"><strong>Usage Example:</strong></p>
                             <div class="key-display" style="font-size: 12px;">
 curl -X POST http://localhost:8000/invoke \\
-  -H "Authorization: Bearer ${{data.api_key}}" \\
+  -H "Authorization: Bearer ${data.api_key}" \\
   -H "Content-Type: application/json" \\
   -d '{{"agent_name": "your-agent", "input": "Hello!"}}'
                             </div>
                         `;
 
                         document.getElementById('keyName').value = '';
-                    }} catch (error) {{
+                    } catch (error) {
                         resultDiv.style.display = 'block';
                         resultDiv.className = '';
                         resultDiv.style.background = '#2e1a1a';
                         resultDiv.style.border = '1px solid #ff6b6b';
                         resultDiv.style.color = '#ff6b6b';
-                        resultDiv.innerHTML = `<p><strong>✗ Error:</strong> ${{error.message}}</p>`;
-                    }}
-                }}
+                        resultDiv.innerHTML = `<p><strong>✗ Error:</strong> ${error.message}</p>`;
+                    }
+                }
 
                 // Allow Enter key to submit
-                document.getElementById('keyName').addEventListener('keypress', function(e) {{
-                    if (e.key === 'Enter') {{
+                document.getElementById('keyName').addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
                         generateTestKey();
-                    }}
-                }});
+                    }
+                });
                 
                 // Check hot reload status
-                async function checkReloadStatus() {{
-                    try {{
+                async function checkReloadStatus() {
+                    try {
                         const response = await fetch('/api/reload/status');
                         const data = await response.json();
                         const message = `Hot Reload Status:\\n\\n` +
-                            `✓ Watcher: ${{data.watcher_active ? 'Active' : 'Inactive'}}\\n` +
-                            `✓ Total Agents: ${{data.total_agents}}\\n` +
-                            `✓ Last Reload: ${{data.seconds_ago}}s ago\\n` +
-                            `✓ Reload Count: ${{data.reload_count}}\\n\\n` +
+                            `✓ Watcher: ${data.watcher_active ? 'Active' : 'Inactive'}\\n` +
+                            `✓ Total Agents: ${data.total_agents}\\n` +
+                            `✓ Last Reload: ${data.seconds_ago}s ago\\n` +
+                            `✓ Reload Count: ${data.reload_count}\\n\\n` +
                             `Files are monitored for changes. Edit any .py file to trigger auto-reload.`;
                         alert(message);
-                    }} catch (error) {{
+                    } catch (error) {
                         alert('Error checking reload status: ' + error.message);
-                    }}
-                }}
+                    }
+                }
                 
                 // Update reload badge on load
                 fetch('/api/reload/status')
                     .then(r => r.json())
-                    .then(data => {{
+                    .then(data => {
                         const badge = document.getElementById('reloadBadge');
-                        if (data.watcher_active) {{
+                        if (data.watcher_active) {
                             badge.textContent = 'Active';
                             badge.style.background = '#1a2e1a';
                             badge.style.color = '#00ff88';
-                        }} else {{
+                        } else {
                             badge.textContent = 'Manual Only';
                             badge.style.background = '#2e1a1a';
                             badge.style.color = '#ff6b6b';
-                        }}
-                    }})
-                    .catch(() => {{}});
+                        }
+                    })
+                    .catch(() => {});
             </script>
         </body>
         </html>
-        """)
+        """
+
+        content = (
+            template
+            .replace("__AGENTS_COUNT__", str(len(discovered_agents)))
+            .replace("__NO_AGENTS_MSG__", no_agents_msg if not discovered_agents else "")
+            .replace("__AGENTS_HTML__", agents_html)
+        )
+        return HTMLResponse(content=content)
 
     @app.get("/login")
     async def login_page(next: str = "/"):
         next = next or "/"
         safe_next = next if next.startswith("/") else "/"
-        return HTMLResponse(
-            content=f"""
+        template = """
             <!DOCTYPE html>
             <html>
             <head>
@@ -597,32 +604,86 @@ curl -X POST http://localhost:8000/invoke \\
                     button {{ background: #00d4ff; color: #000; border: none; padding: 12px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }}
                     button:hover {{ background: #00aacc; }}
                     .hint {{ color: #999; font-size: 13px; line-height: 1.5; }}
+                    .error {{ margin-top: 12px; color: #ff6b6b; font-size: 13px; display: none; }}
                 </style>
             </head>
             <body>
                 <h1>🔐 Teleon Login</h1>
                 <div class="box">
-                    <form method="post" action="/login">
-                        <input type="hidden" name="next" value="{safe_next}" />
+                    <form id="loginForm">
+                        <input type="hidden" id="next" value="__SAFE_NEXT__" />
                         <label for="api_key">Teleon API Key</label>
-                        <input id="api_key" name="api_key" type="password" placeholder="tlk_live_..." autocomplete="current-password" />
+                        <input id="api_key" type="password" placeholder="tlk_live_..." autocomplete="current-password" />
                         <button type="submit">Sign in</button>
                     </form>
+                    <div id="error" class="error"></div>
                     <p class="hint">Use the same API key you use for <code>teleon login</code>. You can create/manage keys in the Teleon dashboard.</p>
                 </div>
+                <script>
+                    const form = document.getElementById('loginForm');
+                    const errorDiv = document.getElementById('error');
+                    form.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        errorDiv.style.display = 'none';
+                        const apiKey = document.getElementById('api_key').value;
+                        const nextUrl = document.getElementById('next').value || '/';
+                        try {
+                            const resp = await fetch('/login', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ api_key: apiKey, next: nextUrl }),
+                                redirect: 'manual',
+                            });
+                            if (resp.status === 0 || resp.status === 302 || resp.status === 303) {
+                                const loc = resp.headers.get('location') || nextUrl;
+                                window.location.href = loc;
+                                return;
+                            }
+                            if (resp.ok) {
+                                const data = await resp.json().catch(() => null);
+                                window.location.href = (data && data.next) ? data.next : nextUrl;
+                                return;
+                            }
+                            const data = await resp.json().catch(() => null);
+                            errorDiv.textContent = (data && (data.detail || data.error)) ? (data.detail || data.error) : 'Login failed';
+                            errorDiv.style.display = 'block';
+                        } catch (err) {
+                            errorDiv.textContent = err && err.message ? err.message : 'Login failed';
+                            errorDiv.style.display = 'block';
+                        }
+                    });
+                </script>
             </body>
             </html>
-            """,
-            status_code=200,
-        )
+            """
+
+        content = template.replace("__SAFE_NEXT__", safe_next)
+        return HTMLResponse(content=content, status_code=200)
 
     @app.post("/login")
-    async def login_submit(request: Request, api_key: str = Form(""), next: str = Form("/")):
-        next = next or "/"
+    async def login_submit(request: Request):
+        content_type = (request.headers.get("content-type") or "").lower()
+        api_key = ""
+        next = "/"
+
+        try:
+            if "application/json" in content_type:
+                payload = await request.json()
+                api_key = (payload.get("api_key") or "").strip()
+                next = (payload.get("next") or "/").strip() or "/"
+            else:
+                body = (await request.body()).decode("utf-8", errors="ignore")
+                parsed = urllib.parse.parse_qs(body)
+                api_key = (parsed.get("api_key", [""])[0] or "").strip()
+                next = (parsed.get("next", ["/"])[0] or "/").strip() or "/"
+        except Exception:
+            api_key = ""
+            next = "/"
+
         safe_next = next if next.startswith("/") else "/"
         valid = await validate_platform_api_key(api_key)
         if not valid:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+            return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
         resp = RedirectResponse(url=safe_next, status_code=302)
         is_https = request.url.scheme == "https"
         resp.set_cookie(
@@ -1001,8 +1062,23 @@ curl -X POST http://localhost:8000/invoke \\
                 ⚠️ <strong>PRODUCTION MODE:</strong> Test API key generation is disabled. Set TELEON_ENV=development to enable.
             </div>
         """
-        
-        return HTMLResponse(content=f"""
+
+        disabled_attr = "disabled" if not is_dev_mode else ""
+        create_button_label = "Create Test API Key" if is_dev_mode else "Disabled in Production Mode"
+        keys_html = "".join([
+            f''' 
+            <div class="key">
+                <p><strong>{data["name"]}</strong> <span class="env-badge dev-badge">DEV ONLY</span></p>
+                <p>{data.get("description", "No description")}</p>
+                <p>Created: {data["created_at"]}</p>
+                <p>Environment: {data.get("environment", "development_only")}</p>
+                <p>Key: <code>{key[:40]}...</code></p>
+            </div>
+            '''
+            for key, data in api_keys.items()
+        ])
+
+        template = """
         <!DOCTYPE html>
         <html>
         <head>
@@ -1025,20 +1101,20 @@ curl -X POST http://localhost:8000/invoke \\
             <h1>🔑 API Key Management</h1>
             <p><a href="/">← Back to Dashboard</a></p>
 
-            {dev_mode_warning}
+            __DEV_MODE_WARNING__
 
             <h2>Create New Test API Key</h2>
             <div class="key">
                 <form id="createKeyForm">
                     <div>
-                        <label>Name: <input type="text" id="keyName" placeholder="My Test Key" required {'disabled' if not is_dev_mode else ''} /></label>
+                        <label>Name: <input type="text" id="keyName" placeholder="My Test Key" required __DISABLED_ATTR__ /></label>
                     </div>
                     <div>
-                        <label>Description: <input type="text" id="keyDesc" placeholder="Optional description" {'disabled' if not is_dev_mode else ''} /></label>
+                        <label>Description: <input type="text" id="keyDesc" placeholder="Optional description" __DISABLED_ATTR__ /></label>
                     </div>
                     <div style="margin-top: 10px;">
-                        <button type="submit" {'disabled' if not is_dev_mode else ''}>
-                            {'Create Test API Key' if is_dev_mode else 'Disabled in Production Mode'}
+                        <button type="submit" __DISABLED_ATTR__>
+                            __CREATE_BUTTON_LABEL__
                         </button>
                         <span class="env-badge dev-badge">DEV ONLY</span>
                     </div>
@@ -1046,16 +1122,8 @@ curl -X POST http://localhost:8000/invoke \\
                 <div id="result" style="margin-top: 15px;"></div>
             </div>
 
-            <h2>Active API Keys ({len(api_keys)})</h2>
-            {''.join([f'''
-            <div class="key">
-                <p><strong>{data["name"]}</strong> <span class="env-badge dev-badge">DEV ONLY</span></p>
-                <p>{data.get("description", "No description")}</p>
-                <p>Created: {data["created_at"]}</p>
-                <p>Environment: {data.get("environment", "development_only")}</p>
-                <p>Key: <code>{key[:40]}...</code></p>
-            </div>
-            ''' for key, data in api_keys.items()])}
+            <h2>Active API Keys (__KEYS_COUNT__)</h2>
+            __KEYS_HTML__
 
             <script>
                 document.getElementById('createKeyForm').addEventListener('submit', async (e) => {{
@@ -1100,7 +1168,18 @@ curl -X POST http://localhost:8000/invoke \\
             </script>
         </body>
         </html>
-        """)
+
+        """
+
+        content = (
+            template
+            .replace("__DEV_MODE_WARNING__", dev_mode_warning)
+            .replace("__DISABLED_ATTR__", disabled_attr)
+            .replace("__CREATE_BUTTON_LABEL__", create_button_label)
+            .replace("__KEYS_COUNT__", str(len(api_keys)))
+            .replace("__KEYS_HTML__", keys_html)
+        )
+        return HTMLResponse(content=content)
 
     # ==================== REQUEST HISTORY ENDPOINTS ====================
     
@@ -1799,7 +1878,7 @@ curl -X POST http://localhost:8000/invoke \\
             for agent_id, info in discovered_agents.items()
         ])
         
-        return HTMLResponse(content=f"""
+        template = """
         <!DOCTYPE html>
         <html>
         <head>
@@ -1843,7 +1922,7 @@ curl -X POST http://localhost:8000/invoke \\
                     <label for="agentSelect">Select Agent</label>
                     <select id="agentSelect" onchange="saveSelection()">
                         <option value="">Choose an agent...</option>
-                        {agents_options}
+                        __AGENTS_OPTIONS__
                     </select>
                     
                     <div class="params-grid" style="margin-top: 15px;">
@@ -1976,6 +2055,9 @@ curl -X POST http://localhost:8000/invoke \\
             </script>
         </body>
         </html>
-        """)
+        """
+
+        content = template.replace("__AGENTS_OPTIONS__", agents_options)
+        return HTMLResponse(content=content)
 
     return app
