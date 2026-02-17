@@ -14,6 +14,8 @@ import asyncio
 import json
 import os
 import secrets
+import hashlib
+import hmac
 import time
 import uuid
 import logging
@@ -22,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
-from fastapi import FastAPI, HTTPException, Header, Request, Response
+from fastapi import FastAPI, HTTPException, Header, Request, Response, Form, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -88,9 +90,48 @@ class PlaygroundRequest(BaseModel):
     max_tokens: int = 500
 
 
+def _get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sign_session(session_secret: str, session_id: str) -> str:
+    sig = hmac.new(
+        key=session_secret.encode("utf-8"),
+        msg=session_id.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    return f"{session_id}.{sig}"
+
+
+def _verify_session(session_secret: str, cookie_value: str) -> Optional[str]:
+    if not cookie_value or "." not in cookie_value:
+        return None
+    session_id, sig = cookie_value.rsplit(".", 1)
+    expected = hmac.new(
+        key=session_secret.encode("utf-8"),
+        msg=session_id.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    return session_id
+
+
 def create_dev_server(
     project_dir: Optional[Path] = None,
-    discovered_agents: Optional[Dict[str, any]] = None
+    discovered_agents: Optional[Dict[str, any]] = None,
+    auth_enabled: bool = False,
+    auth_password: Optional[str] = None,
+    auth_max_failures: int = 3
 ) -> FastAPI:
     """
     Create a development server with auto-discovered agents.
@@ -98,6 +139,9 @@ def create_dev_server(
     Args:
         project_dir: Directory to scan for agents (defaults to current directory)
         discovered_agents: Pre-discovered agents (optional, will auto-discover if None)
+        auth_enabled: Enable password-gated access (optional, defaults to False)
+        auth_password: Password for dev server access (optional, will generate a random password if not provided)
+        auth_max_failures: Maximum failed login attempts before rotating password (optional, defaults to 3)
 
     Returns:
         FastAPI app configured with all discovered agents
@@ -149,6 +193,36 @@ def create_dev_server(
         redoc_url=None     # Disable redoc
     )
 
+    # Dev server auth state (in-memory)
+    session_secret = secrets.token_urlsafe(32)
+    active_sessions: Dict[str, datetime] = {}
+    session_ttl = timedelta(hours=12)
+    failed_attempts_by_ip: Dict[str, int] = defaultdict(int)
+    password_salt = secrets.token_urlsafe(16)
+    current_password_hash = _sha256_hex(f"{password_salt}:{auth_password or ''}") if auth_password else None
+
+    def _rotate_password() -> str:
+        nonlocal password_salt, current_password_hash
+        password_salt = secrets.token_urlsafe(16)
+        new_password = secrets.token_urlsafe(18)
+        current_password_hash = _sha256_hex(f"{password_salt}:{new_password}")
+        active_sessions.clear()
+        failed_attempts_by_ip.clear()
+        logger.warning(
+            "Dev server password rotated due to failed authentication attempts. New password: %s",
+            new_password,
+        )
+        return new_password
+
+    def _is_session_valid(session_id: str) -> bool:
+        expires_at = active_sessions.get(session_id)
+        if not expires_at:
+            return False
+        if datetime.now(timezone.utc) >= expires_at:
+            active_sessions.pop(session_id, None)
+            return False
+        return True
+
     # Add CORS
     app.add_middleware(
         CORSMiddleware,
@@ -157,6 +231,27 @@ def create_dev_server(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Auth enforcement middleware (optional)
+    class DevServerAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            if not auth_enabled:
+                return await call_next(request)
+
+            allow_paths = ["/auth", "/auth/login", "/auth/logout"]
+            if any(request.url.path == p for p in allow_paths):
+                return await call_next(request)
+
+            cookie_value = request.cookies.get("teleon_dev_session")
+            session_id = _verify_session(session_secret, cookie_value) if cookie_value else None
+            if session_id and _is_session_valid(session_id):
+                return await call_next(request)
+
+            if request.url.path.startswith("/api/") or request.url.path.endswith("/openapi.json"):
+                return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            return RedirectResponse(url="/auth", status_code=302)
+
+    app.add_middleware(DevServerAuthMiddleware)
 
     # Request capture middleware for history and metrics
     class RequestCaptureMiddleware(BaseHTTPMiddleware):
@@ -253,6 +348,78 @@ def create_dev_server(
             return response
     
     app.add_middleware(RequestCaptureMiddleware)
+
+    @app.get("/auth", include_in_schema=False)
+    async def auth_page():
+        if not auth_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        return HTMLResponse(content=(
+            "<html><head><title>Teleon Dev Server Login</title></head>"
+            "<body style='font-family: system-ui; max-width: 520px; margin: 40px auto;'>"
+            "<h2>Teleon Dev Server</h2>"
+            "<p>Enter the password from the terminal to access this dev server.</p>"
+            "<form method='post' action='/auth/login'>"
+            "<input type='password' name='password' autofocus "
+            "style='width: 100%; padding: 10px; font-size: 16px;'/>"
+            "<button type='submit' style='margin-top: 12px; padding: 10px 14px; font-size: 16px;'>"
+            "Login</button>"
+            "</form>"
+            "</body></html>"
+        ))
+
+    @app.post("/auth/login", include_in_schema=False)
+    async def auth_login(request: Request, password: str = Form(...)):
+        if not auth_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not current_password_hash:
+            raise HTTPException(status_code=500, detail="Auth password not configured")
+
+        ip = _get_client_ip(request)
+        attempted_hash = _sha256_hex(f"{password_salt}:{password}")
+        if hmac.compare_digest(attempted_hash, current_password_hash):
+            failed_attempts_by_ip.pop(ip, None)
+            session_id = secrets.token_urlsafe(24)
+            active_sessions[session_id] = datetime.now(timezone.utc) + session_ttl
+
+            resp = HTMLResponse(status_code=302)
+            resp.headers["location"] = "/"
+            resp.set_cookie(
+                key="teleon_dev_session",
+                value=_sign_session(session_secret, session_id),
+                httponly=True,
+                samesite="lax",
+            )
+            return resp
+
+        failed_attempts_by_ip[ip] += 1
+        if failed_attempts_by_ip[ip] >= auth_max_failures:
+            _rotate_password()
+            return HTMLResponse(status_code=429, content=(
+                "<html><head><title>Teleon Dev Server</title></head>"
+                "<body style='font-family: system-ui; max-width: 520px; margin: 40px auto;'>"
+                "<h2>Too many attempts</h2>"
+                "<p>The dev server password has been rotated. Check the terminal logs for the new password.</p>"
+                "<p><a href='/auth'>Back to login</a></p>"
+                "</body></html>"
+            ))
+
+        return HTMLResponse(status_code=401, content=(
+            "<html><head><title>Teleon Dev Server Login</title></head>"
+            "<body style='font-family: system-ui; max-width: 520px; margin: 40px auto;'>"
+            "<h2>Invalid password</h2>"
+            f"<p>Attempts remaining: {max(auth_max_failures - failed_attempts_by_ip[ip], 0)}</p>"
+            "<p><a href='/auth'>Try again</a></p>"
+            "</body></html>"
+        ))
+
+    @app.post("/auth/logout", include_in_schema=False)
+    async def auth_logout():
+        if not auth_enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        resp = HTMLResponse(status_code=302)
+        resp.headers["location"] = "/auth"
+        resp.delete_cookie("teleon_dev_session")
+        return resp
 
     def verify_api_key(api_key: str) -> bool:
         """

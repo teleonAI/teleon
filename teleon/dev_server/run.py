@@ -19,6 +19,17 @@ def main():
     # Get host and port from environment variables
     host = os.environ.get("TELEON_HOST", "127.0.0.1")
     port = int(os.environ.get("TELEON_PORT", "8000"))
+
+    auth_enabled_env = os.environ.get("TELEON_DEV_AUTH", "").strip().lower()
+    auth_enabled = auth_enabled_env in ["1", "true", "yes", "on"]
+    if not auth_enabled and host not in ["127.0.0.1", "localhost"]:
+        auth_enabled = True
+
+    auth_password = os.environ.get("TELEON_DEV_AUTH_PASSWORD")
+    if auth_enabled and not auth_password:
+        import secrets
+
+        auth_password = secrets.token_urlsafe(18)
     
     print("\n" + "=" * 80)
     print("🚀 TELEON DEVELOPMENT SERVER")
@@ -59,6 +70,17 @@ def main():
     print()
     print(f"   📍 Dashboard:   http://{host}:{port}")
     print(f"   📖 API Docs:    http://{host}:{port}/docs")
+
+    if auth_enabled:
+        print(f"   🔐 Login:       http://{host}:{port}/auth")
+        print()
+        print("=" * 80)
+        print("🔐 DEV SERVER PASSWORD")
+        print("=" * 80)
+        print()
+        print(f"   {auth_password}")
+        print()
+        print("(Keep this password secret. If you lose it, restart the server to generate a new one.)")
     
     if agents:
         print("\n   🤖 Agent Endpoints:")
@@ -82,7 +104,12 @@ def main():
     print()
     
     # Create and run server (pass pre-discovered agents to avoid double scanning)
-    app = create_dev_server(discovered_agents=agents)
+    app = create_dev_server(
+        discovered_agents=agents,
+        auth_enabled=auth_enabled,
+        auth_password=auth_password,
+        auth_max_failures=int(os.environ.get("TELEON_DEV_AUTH_MAX_FAILURES", "3"))
+    )
     
     try:
         uvicorn.run(
