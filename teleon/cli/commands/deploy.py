@@ -485,23 +485,10 @@ def detect_agents():
                     "import sentinel" in content
                 )
                 
-                # Detect memory backend usage
-                uses_chromadb = (
-                    "create_chroma_storage" in content or
-                    "enable_chromadb=True" in content or
-                    "from teleon.cortex.storage" in content or
-                    "ChromaDB" in content
-                )
-                
-                uses_semantic_memory = (
-                    "cortex.semantic" in content or
-                    ".semantic.store" in content or
-                    ".semantic.search" in content
-                )
-                
                 uses_redis = (
                     "storage_backend=\"redis\"" in content or
-                    "storage_backend='redis'" in content
+                    "storage_backend='redis'" in content or
+                    "REDIS_URL" in content
                 )
                 
                 # Extract configurations if present
@@ -515,8 +502,6 @@ def detect_agents():
                     "uses_cortex": uses_cortex,
                     "uses_helix": uses_helix,
                     "uses_sentinel": uses_sentinel,
-                    "uses_chromadb": uses_chromadb,
-                    "uses_semantic_memory": uses_semantic_memory,
                     "uses_redis": uses_redis,
                     "helix_config": helix_config,
                     "sentinel_config": sentinel_config,
@@ -740,778 +725,170 @@ def analyze_database_needs(agents):
 
 
 # ============================================================================
-# STORAGE ARCHITECTURE DEFINITIONS
+# STORAGE CONFIGURATION
 # ============================================================================
-
-ARCHITECTURES = {
-    "hybrid_speed": {
-        "id": "hybrid_speed",
-        "name": "Hybrid: Speed-Optimized",
-        "short_name": "ChromaDB + Redis",
-        "icon": "⚡",
-        "badge": "RECOMMENDED",
-        "badge_color": "green",
-        "description": "Best performance for most AI agents",
-        "databases": [
-            {"type": "chromadb", "size": "10GB", "purpose": "Semantic memory (knowledge base)"},
-            {"type": "redis", "size": "4GB", "purpose": "Episodic & procedural memory"}
-        ],
-        "features": [
-            "Ultra-fast conversation storage (~1ms latency)",
-            "Semantic search with ChromaDB + FastEmbed",
-            "Free local embeddings (no API costs)",
-            "Perfect for real-time, high-throughput agents"
-        ],
-        "best_for": ["Chat bots", "Customer support", "Real-time assistants", "High-traffic agents"],
-        "performance": {"read_latency": "~1ms", "write_latency": "~1ms", "throughput": "100K+ ops/sec"},
-        "storage_total": "14GB",
-        "monthly_cost": 0  # Included
-    },
-    "hybrid_analytics": {
-        "id": "hybrid_analytics",
-        "name": "Hybrid: Analytics-Ready",
-        "short_name": "ChromaDB + PostgreSQL",
-        "icon": "📊",
-        "badge": "COMPLIANCE",
-        "badge_color": "cyan",
-        "description": "Best for complex queries & audit trails",
-        "databases": [
-            {"type": "chromadb", "size": "10GB", "purpose": "Semantic memory (knowledge base)"},
-            {"type": "postgres", "size": "20GB", "purpose": "Episodic & procedural memory"}
-        ],
-        "features": [
-            "Full SQL queries on conversation history",
-            "ACID compliance & data integrity",
-            "Complex time-range & analytics queries",
-            "Semantic search with ChromaDB + FastEmbed"
-        ],
-        "best_for": ["Enterprise agents", "Compliance-required", "Analytics/reporting", "Audit trails"],
-        "performance": {"read_latency": "~5ms", "write_latency": "~5ms", "throughput": "10K+ ops/sec"},
-        "storage_total": "30GB",
-        "monthly_cost": 0
-    },
-    "unified_postgres": {
-        "id": "unified_postgres",
-        "name": "Unified: PostgreSQL Only",
-        "short_name": "PostgreSQL + pgvector",
-        "icon": "🐘",
-        "badge": "SIMPLE",
-        "badge_color": "yellow",
-        "description": "Single database, simpler operations",
-        "databases": [
-            {"type": "postgres", "size": "30GB", "purpose": "All memory types with pgvector"}
-        ],
-        "features": [
-            "Single database for everything",
-            "pgvector for semantic search",
-            "Full SQL across all memory types",
-            "Simpler backup & recovery"
-        ],
-        "best_for": ["Small teams", "Simpler ops", "SQL-first workflows", "Lower complexity"],
-        "performance": {"read_latency": "~5ms", "write_latency": "~5ms", "throughput": "10K+ ops/sec"},
-        "storage_total": "30GB",
-        "monthly_cost": 0
-    },
-    "unified_redis": {
-        "id": "unified_redis",
-        "name": "Unified: Redis Only",
-        "short_name": "Redis (All Memory)",
-        "icon": "🔴",
-        "badge": "SPEED",
-        "badge_color": "red",
-        "description": "Maximum speed, in-memory everything",
-        "databases": [
-            {"type": "redis", "size": "8GB", "purpose": "All memory types (ephemeral vectors)"}
-        ],
-        "features": [
-            "Blazing fast everything (~1ms)",
-            "Simple key-value patterns",
-            "Best for ephemeral/session data",
-            "⚠️ Limited vector search capabilities"
-        ],
-        "best_for": ["Session-only agents", "Ephemeral memory", "Maximum speed", "Simple use cases"],
-        "performance": {"read_latency": "~1ms", "write_latency": "~1ms", "throughput": "100K+ ops/sec"},
-        "storage_total": "8GB",
-        "monthly_cost": 0
-    }
-}
-
-
-def analyze_agent_workload(agents) -> dict:
-    """
-    Analyze agent code to determine optimal architecture.
-    
-    Returns:
-        Dict with workload analysis and recommendation
-    """
-    analysis = {
-        "uses_semantic_memory": False,
-        "uses_chromadb": False,
-        "uses_episodic_memory": False,
-        "uses_procedural_memory": False,
-        "uses_redis_explicit": False,
-        "uses_postgres_explicit": False,
-        "high_throughput_hints": False,
-        "compliance_hints": False,
-        "analytics_hints": False,
-        "agent_count": len(agents),
-        "recommended_architecture": "hybrid_speed"
-    }
-    
-    for agent in agents:
-        if agent.get("uses_chromadb"):
-            analysis["uses_chromadb"] = True
-            analysis["uses_semantic_memory"] = True
-        if agent.get("uses_semantic_memory"):
-            analysis["uses_semantic_memory"] = True
-        if agent.get("uses_cortex"):
-            analysis["uses_episodic_memory"] = True
-            analysis["uses_procedural_memory"] = True
-        if agent.get("uses_redis"):
-            analysis["uses_redis_explicit"] = True
-        
-        # Check for workload hints in agent metadata
-        agent_name = agent.get("name", "").lower()
-        if any(kw in agent_name for kw in ["chat", "bot", "realtime", "assistant", "support"]):
-            analysis["high_throughput_hints"] = True
-        if any(kw in agent_name for kw in ["compliance", "audit", "legal", "finance", "enterprise"]):
-            analysis["compliance_hints"] = True
-        if any(kw in agent_name for kw in ["analytics", "report", "insight", "dashboard"]):
-            analysis["analytics_hints"] = True
-    
-    # Determine recommendation
-    if analysis["compliance_hints"] or analysis["analytics_hints"]:
-        analysis["recommended_architecture"] = "hybrid_analytics"
-    elif analysis["uses_chromadb"] or analysis["uses_semantic_memory"]:
-        if analysis["high_throughput_hints"]:
-            analysis["recommended_architecture"] = "hybrid_speed"
-        else:
-            analysis["recommended_architecture"] = "hybrid_speed"
-    elif not analysis["uses_semantic_memory"]:
-        if analysis["high_throughput_hints"]:
-            analysis["recommended_architecture"] = "unified_redis"
-        else:
-            analysis["recommended_architecture"] = "hybrid_speed"
-    
-    return analysis
-
-
-def show_architecture_comparison():
-    """Display architecture comparison table"""
-    
-    table = Table(
-        title="\n[bold]Architecture Comparison[/bold]",
-        show_header=True,
-        header_style="bold cyan",
-        border_style="dim",
-        padding=(0, 1)
-    )
-    
-    table.add_column("Feature", style="white", width=22)
-    table.add_column("⚡ Speed\n(ChromaDB+Redis)", style="green", width=18, justify="center")
-    table.add_column("📊 Analytics\n(ChromaDB+PG)", style="cyan", width=18, justify="center")
-    table.add_column("🐘 Unified\n(PostgreSQL)", style="yellow", width=18, justify="center")
-    
-    # Performance metrics
-    table.add_row(
-        "[bold]Read Latency[/bold]",
-        "[green]~1ms[/green]",
-        "~5ms",
-        "~5ms"
-    )
-    table.add_row(
-        "[bold]Write Latency[/bold]",
-        "[green]~1ms[/green]",
-        "~5ms",
-        "~5ms"
-    )
-    table.add_row(
-        "[bold]Throughput[/bold]",
-        "[green]100K+ ops/s[/green]",
-        "10K+ ops/s",
-        "10K+ ops/s"
-    )
-    table.add_row("", "", "", "")  # Spacer
-    
-    # Features
-    table.add_row(
-        "[bold]Vector Search[/bold]",
-        "[green]✓ ChromaDB[/green]",
-        "[green]✓ ChromaDB[/green]",
-        "[yellow]✓ pgvector[/yellow]"
-    )
-    table.add_row(
-        "[bold]SQL Queries[/bold]",
-        "[dim]✗ Limited[/dim]",
-        "[green]✓ Full SQL[/green]",
-        "[green]✓ Full SQL[/green]"
-    )
-    table.add_row(
-        "[bold]ACID Compliance[/bold]",
-        "[dim]✗ Eventual[/dim]",
-        "[green]✓ Full ACID[/green]",
-        "[green]✓ Full ACID[/green]"
-    )
-    table.add_row(
-        "[bold]Analytics Ready[/bold]",
-        "[dim]✗ External[/dim]",
-        "[green]✓ Native[/green]",
-        "[green]✓ Native[/green]"
-    )
-    table.add_row("", "", "", "")  # Spacer
-    
-    # Cost & storage
-    table.add_row(
-        "[bold]Storage[/bold]",
-        "14GB",
-        "30GB",
-        "30GB"
-    )
-    table.add_row(
-        "[bold]Embedding Cost[/bold]",
-        "[green]$0 (FastEmbed)[/green]",
-        "[green]$0 (FastEmbed)[/green]",
-        "[yellow]$0 (pgvector)[/yellow]"
-    )
-    table.add_row(
-        "[bold]Monthly Cost[/bold]",
-        "[green]Included ✓[/green]",
-        "[green]Included ✓[/green]",
-        "[green]Included ✓[/green]"
-    )
-    
-    console.print(table)
-
-
-def show_architecture_details(arch_id: str):
-    """Show detailed info for a specific architecture"""
-    arch = ARCHITECTURES.get(arch_id)
-    if not arch:
-        return
-    
-    console.print(f"\n[bold]{arch['icon']} {arch['name']}[/bold]")
-    console.print(f"[dim]{arch['description']}[/dim]\n")
-    
-    # Databases
-    console.print("[bold]Databases provisioned:[/bold]")
-    for db in arch["databases"]:
-        db_icon = {"chromadb": "🔮", "redis": "🔴", "postgres": "🐘"}.get(db["type"], "💾")
-        console.print(f"  {db_icon} [cyan]{db['type'].title()}[/cyan] ({db['size']}): {db['purpose']}")
-    
-    # Features
-    console.print("\n[bold]Features:[/bold]")
-    for feature in arch["features"]:
-        if feature.startswith("⚠️"):
-            console.print(f"  [yellow]{feature}[/yellow]")
-        else:
-            console.print(f"  [green]✓[/green] {feature}")
-    
-    # Best for
-    console.print("\n[bold]Best for:[/bold]")
-    console.print(f"  {', '.join(arch['best_for'])}")
-    
-    # Performance
-    perf = arch["performance"]
-    console.print("\n[bold]Performance:[/bold]")
-    console.print(f"  • Read: {perf['read_latency']} | Write: {perf['write_latency']} | Throughput: {perf['throughput']}")
 
 
 def configure_databases(agents):
-    """Configure database options with explicit architecture selection"""
-    
+    """Configure database options for Cortex memory."""
+
     console.print("\n" + "="*70)
-    console.print("[bold cyan]💾 Storage Architecture Configuration[/bold cyan]")
+    console.print("[bold cyan]💾 Storage Configuration[/bold cyan]")
     console.print("="*70)
-    
-    # Analyze workload
+
     cortex_agents = [a for a in agents if a.get("uses_cortex")]
-    analysis = analyze_agent_workload(cortex_agents)
-    recommended = analysis["recommended_architecture"]
-    
     console.print(f"\n[bold]{len(cortex_agents)} agent(s) use Cortex memory[/bold]")
-    
-    # Show what was detected
-    detected = []
-    if analysis["uses_semantic_memory"]:
-        detected.append("Semantic Memory (Knowledge Base)")
-    if analysis["uses_episodic_memory"]:
-        detected.append("Episodic Memory (Conversations)")
-    if analysis["uses_procedural_memory"]:
-        detected.append("Procedural Memory (Learned Patterns)")
-    
-    if detected:
-        console.print(f"[dim]Detected: {', '.join(detected)}[/dim]")
-    
-    # First ask: Managed vs BYO
+    console.print("[dim]Cortex uses a single database for all memory (store, search, context).[/dim]")
+
     console.print("\n[bold]How would you like to handle storage?[/bold]")
     console.print("\n  1. [green]Managed by Teleon[/green] (recommended)")
-    console.print("     • Zero configuration, automatic provisioning")
-    console.print("     • Automatic backups, scaling & monitoring")
+    console.print("     • PostgreSQL + pgvector provisioned automatically")
+    console.print("     • Accessible via pgAdmin (db-N.teleon.ai)")
+    console.print("     • Automatic backups, monitoring & SSL")
     console.print("     • Included in subscription")
     console.print("")
     console.print("  2. [yellow]Bring Your Own Database (BYO-DB)[/yellow]")
-    console.print("     • Use your existing Redis/PostgreSQL")
-    console.print("     • Provide connection strings")
+    console.print("     • Use your existing PostgreSQL or Redis")
+    console.print("     • Provide connection string")
     console.print("     • You manage backups & scaling")
-    
+
     mode_choice = Prompt.ask("\n[bold]Choose option[/bold]", choices=["1", "2"], default="1")
-    
+
     if mode_choice == "2":
-        return configure_byo_databases(analysis)
-    
-    # Managed mode - show architecture options
-    return configure_managed_databases(cortex_agents, analysis, recommended)
+        return configure_byo_databases()
+
+    return configure_managed_databases()
 
 
-def configure_managed_databases(agents, analysis: dict, recommended: str):
-    """Configure Teleon-managed databases with architecture selection"""
-    
+def configure_managed_databases():
+    """Configure Teleon-managed PostgreSQL + pgvector database."""
+
     console.print("\n[green]✓ Selected: Managed by Teleon[/green]")
-    
-    # Show architecture selection
     console.print("\n" + "-"*70)
-    console.print("[bold cyan]🏗️  Choose Your Storage Architecture[/bold cyan]")
+    console.print("[bold cyan]🐘 PostgreSQL + pgvector[/bold cyan]")
     console.print("-"*70)
-    
-    console.print("\n[dim]📝 Working Memory (session context) always uses in-memory storage - no database needed[/dim]")
-    
-    # Display options with recommendation highlighted
-    console.print("\n[bold]Select an architecture:[/bold]\n")
-    
-    arch_order = ["hybrid_speed", "hybrid_analytics", "unified_postgres", "unified_redis"]
-    
-    for i, arch_id in enumerate(arch_order, 1):
-        arch = ARCHITECTURES[arch_id]
-        is_recommended = arch_id == recommended
-        
-        # Build the display line
-        if is_recommended:
-            badge = f"[bold green][{arch['badge']}][/bold green]"
-            name_style = "bold green"
-            prefix = "★"
-        else:
-            badge = f"[{arch['badge_color']}][{arch['badge']}][/{arch['badge_color']}]"
-            name_style = "white"
-            prefix = " "
-        
-        console.print(f"  {prefix} {i}. [{name_style}]{arch['icon']} {arch['name']}[/{name_style}] {badge}")
-        console.print(f"       [dim]{arch['short_name']} • {arch['description']}[/dim]")
-        
-        # Show key benefits
-        for feature in arch["features"][:2]:  # Show first 2 features
-            if feature.startswith("⚠️"):
-                console.print(f"       [yellow]• {feature}[/yellow]")
-            else:
-                console.print(f"       [dim]• {feature}[/dim]")
-        console.print("")
-    
-    # Show comparison table option
-    console.print("  [dim]5. Show detailed comparison table[/dim]")
-    console.print("  [dim]6. Custom configuration (advanced)[/dim]")
-    
-    # Get selection
-    default_choice = str(arch_order.index(recommended) + 1)
-    choice = Prompt.ask(
-        f"\n[bold]Choose architecture[/bold]",
-        choices=["1", "2", "3", "4", "5", "6"],
-        default=default_choice
-    )
-    
-    # Handle special options
-    if choice == "5":
-        show_architecture_comparison()
-        # Re-prompt after showing table
-        choice = Prompt.ask(
-            f"\n[bold]Now choose your architecture[/bold]",
-            choices=["1", "2", "3", "4", "6"],
-            default=default_choice
-        )
-    
-    if choice == "6":
-        return configure_custom_architecture(agents, analysis)
-    
-    # Map choice to architecture
-    selected_arch_id = arch_order[int(choice) - 1]
-    selected_arch = ARCHITECTURES[selected_arch_id]
-    
-    # Show selection confirmation with details
-    console.print("\n" + "-"*70)
-    show_architecture_details(selected_arch_id)
-    
-    # Confirm selection
-    if not Confirm.ask(f"\n[bold]Proceed with {selected_arch['name']}?[/bold]", default=True):
-        # Recurse to re-select
-        return configure_managed_databases(agents, analysis, recommended)
-    
-    # Build database config
-    databases = selected_arch["databases"].copy()
-    
-    # Show final summary
-    console.print("\n" + "-"*70)
-    console.print("[bold green]✓ Architecture Selected![/bold green]")
-    console.print("-"*70)
-    
-    console.print("\n[bold]Provisioned Storage:[/bold]")
-    for db in databases:
-        db_icon = {"chromadb": "🔮", "redis": "🔴", "postgres": "🐘"}.get(db["type"], "💾")
-        console.print(f"  {db_icon} [cyan]{db['type'].title()} ({db['size']}):[/cyan] {db['purpose']}")
-    
-    console.print(f"\n[bold]Total Storage:[/bold] {selected_arch['storage_total']}")
-    
+
+    console.print("\n[bold]What gets provisioned:[/bold]")
+    console.print("  🐘 [cyan]PostgreSQL[/cyan] with pgvector extension")
+    console.print("     • Vector similarity search (cosine, IVFFlat index)")
+    console.print("     • Full SQL queries on all memory data")
+    console.print("     • ACID compliance & data integrity")
+    console.print("     • Embeddings via FastEmbed (free) or OpenAI")
+
+    console.print("\n[bold]Connection details:[/bold]")
+    console.print("  • Host: [cyan]db-N.teleon.ai[/cyan] (custom DNS)")
+    console.print("  • SSL: Required (enforced)")
+    console.print("  • Access: pgAdmin, DBeaver, any PostgreSQL client")
+    console.print("  • Credentials: Shown after provisioning")
+
     console.print("\n[bold]What you get:[/bold]")
-    console.print("  ✓ Automatic provisioning (3-5 minutes)")
+    console.print("  ✓ Automatic provisioning (~3-5 minutes)")
     console.print("  ✓ Persistent storage across restarts")
     console.print("  ✓ Automatic daily backups (7-day retention)")
     console.print("  ✓ Real-time monitoring via dashboard")
-    console.print("  ✓ Auto-scaling based on usage")
     console.print("  ✓ [green]Included in subscription[/green]")
-    
-    # Special notes
-    if any(db.get("type") == "chromadb" for db in databases):
-        console.print("  ✓ [green]Free embeddings with FastEmbed (save $100+/month)[/green]")
-    
+
+    if not Confirm.ask("\n[bold]Proceed with managed PostgreSQL?[/bold]", default=True):
+        return None
+
     return {
         "mode": "managed",
-        "architecture": selected_arch_id,
-        "architecture_name": selected_arch["name"],
-        "databases": databases
+        "architecture": "managed_postgres",
+        "architecture_name": "PostgreSQL + pgvector (Managed)",
+        "databases": [
+            {"type": "postgres", "purpose": "Cortex memory with pgvector"}
+        ]
     }
-
-
-def configure_custom_architecture(agents, analysis: dict):
-    """Configure custom architecture by selecting each component"""
     
-    console.print("\n[yellow]✓ Custom Configuration Mode[/yellow]")
-    console.print("[dim]Configure each memory type separately[/dim]")
-    
+def configure_byo_databases():
+    """Configure bring-your-own databases — PostgreSQL or Redis only."""
+
+    console.print("\n[yellow]✓ Bring Your Own Database (BYO-DB)[/yellow]")
+    console.print("[dim]Connect your existing database to Cortex memory.[/dim]")
+
+    console.print("\n[bold]Cortex supports two backends:[/bold]")
+    console.print("\n  1. [green]PostgreSQL + pgvector[/green] (recommended)")
+    console.print("     • Vector search + full SQL in one database")
+    console.print("     • ACID compliance, analytics, pgAdmin support")
+    console.print("     • Requires pgvector extension installed")
+    console.print("")
+    console.print("  2. [cyan]Redis + RediSearch[/cyan]")
+    console.print("     • In-memory, ultra-fast (~1ms latency)")
+    console.print("     • Requires RediSearch module (Redis Stack or self-hosted)")
+    console.print("     [yellow]• Not available on AWS ElastiCache — use Redis Cloud or self-hosted[/yellow]")
+
+    backend_choice = Prompt.ask("\n[bold]Choose backend[/bold]", choices=["1", "2"], default="1")
+
     databases = []
-    
-    # ========================================
-    # 1. SEMANTIC MEMORY (Knowledge Base)
-    # ========================================
-    if analysis["uses_semantic_memory"]:
-        console.print("\n[bold cyan]━━━ Semantic Memory (Knowledge Base) ━━━[/bold cyan]")
-        console.print("[dim]Stores long-term knowledge with vector similarity search[/dim]\n")
-        
-        console.print("  [bold]Choose vector storage backend:[/bold]")
-        console.print("\n  1. [green]ChromaDB[/green] (recommended)")
-        console.print("     • Purpose-built for vector search")
-        console.print("     • Free embeddings with FastEmbed")
-        console.print("     • Optimized similarity algorithms")
-        console.print("     • 10GB storage included")
-        console.print("")
-        console.print("  2. [yellow]PostgreSQL with pgvector[/yellow]")
-        console.print("     • SQL + vectors in one database")
-        console.print("     • Complex joins with other data")
-        console.print("     • 20GB storage included")
-        console.print("")
-        console.print("  3. [dim]Skip (no semantic memory)[/dim]")
-        
-        semantic_choice = Prompt.ask("\n  Choose", choices=["1", "2", "3"], default="1")
-        
-        if semantic_choice == "1":
-            databases.append({
-                "type": "chromadb",
-                "size": "10GB",
-                "purpose": "Semantic memory (knowledge base)"
-            })
-            console.print("  [green]✓ ChromaDB selected[/green]")
-        elif semantic_choice == "2":
+
+    if backend_choice == "1":
+        console.print("\n[bold]PostgreSQL Connection:[/bold]")
+        console.print("[dim]Example: postgresql://user:pass@your-db.com:5432/teleon[/dim]")
+        postgres_url = Prompt.ask("PostgreSQL URL", default="postgresql://localhost:5432/teleon")
+
+        console.print("\n[dim]Testing connection...[/dim]")
+        if test_postgres_connection(postgres_url):
+            console.print("[green]✓ PostgreSQL connection successful[/green]")
             databases.append({
                 "type": "postgres",
-                "size": "20GB",
-                "purpose": "Semantic memory with pgvector"
+                "url": postgres_url,
+                "purpose": "Cortex memory with pgvector"
             })
-            console.print("  [green]✓ PostgreSQL + pgvector selected[/green]")
         else:
-            console.print("  [dim]Semantic memory skipped[/dim]")
-    
-    # ========================================
-    # 2. EPISODIC & PROCEDURAL MEMORY
-    # ========================================
-    if analysis["uses_episodic_memory"] or analysis["uses_procedural_memory"]:
-        console.print("\n[bold cyan]━━━ Episodic & Procedural Memory ━━━[/bold cyan]")
-        console.print("[dim]Conversation history & learned patterns[/dim]\n")
-        
-        # Check if PostgreSQL already selected
-        has_postgres = any(db.get("type") == "postgres" for db in databases)
-        
-        console.print("  [bold]Choose key-value storage backend:[/bold]")
-        console.print("\n  1. [green]Redis[/green] (recommended for speed)")
-        console.print("     • Ultra-fast in-memory (~1ms latency)")
-        console.print("     • 100K+ operations/second")
-        console.print("     • Perfect for real-time agents")
-        console.print("     • 4GB storage included")
-        console.print("")
-        
-        if has_postgres:
-            console.print("  2. [cyan]Use existing PostgreSQL[/cyan]")
-            console.print("     • Share with semantic memory")
-            console.print("     • Single database to manage")
-            console.print("     • Full SQL on conversations")
-        else:
-            console.print("  2. [yellow]PostgreSQL[/yellow]")
-            console.print("     • ACID compliance")
-            console.print("     • Complex time-range queries")
-            console.print("     • Analytics & reporting")
-            console.print("     • 20GB storage included")
-        
-        console.print("")
-        console.print("  3. [dim]Skip (no episodic/procedural)[/dim]")
-        
-        kv_choice = Prompt.ask("\n  Choose", choices=["1", "2", "3"], default="1")
-        
-        if kv_choice == "1":
+            console.print("[red]Could not connect to PostgreSQL[/red]")
+            if not Confirm.ask("Continue anyway?", default=False):
+                raise typer.Exit(1)
+            databases.append({
+                "type": "postgres",
+                "url": postgres_url,
+                "purpose": "Cortex memory with pgvector",
+                "verified": False
+            })
+    else:
+        console.print("\n[bold]Redis Connection:[/bold]")
+        console.print("[dim]Example: redis://user:pass@your-redis.com:6379/0[/dim]")
+        console.print("[yellow]Requires RediSearch module — AWS ElastiCache does NOT support this.[/yellow]")
+        console.print("[dim]Use Redis Cloud, Redis Stack, or self-hosted Redis with RediSearch.[/dim]")
+        redis_url = Prompt.ask("Redis URL", default="redis://localhost:6379/0")
+
+        console.print("\n[dim]Testing connection...[/dim]")
+        if test_redis_connection(redis_url):
+            console.print("[green]✓ Redis connection successful[/green]")
             databases.append({
                 "type": "redis",
-                "size": "4GB",
-                "purpose": "Episodic & procedural memory"
+                "url": redis_url,
+                "purpose": "Cortex memory with RediSearch"
             })
-            console.print("  [green]✓ Redis selected[/green]")
-        elif kv_choice == "2":
-            if has_postgres:
-                # Update existing PostgreSQL entry
-                for db in databases:
-                    if db["type"] == "postgres":
-                        db["size"] = "30GB"
-                        db["purpose"] = "Semantic, episodic & procedural memory"
-                console.print("  [green]✓ Using existing PostgreSQL (shared)[/green]")
-            else:
-                databases.append({
-                    "type": "postgres",
-                    "size": "20GB",
-                    "purpose": "Episodic & procedural memory"
-                })
-                console.print("  [green]✓ PostgreSQL selected[/green]")
         else:
-            console.print("  [dim]Episodic/procedural memory skipped[/dim]")
-    
-    # ========================================
-    # FALLBACK
-    # ========================================
-    if not databases:
-        console.print("\n[yellow]⚠️  No databases selected. Adding minimal storage.[/yellow]")
-        databases.append({
-            "type": "storage",
-            "size": "5GB",
-            "purpose": "General persistent storage"
-        })
-    
-    # Calculate total storage
-    total_gb = sum(int(db["size"].replace("GB", "")) for db in databases)
-    
-    # Determine architecture name
-    db_types = [db["type"] for db in databases]
-    if "chromadb" in db_types and "redis" in db_types:
-        arch_name = "Custom: ChromaDB + Redis"
-    elif "chromadb" in db_types and "postgres" in db_types:
-        arch_name = "Custom: ChromaDB + PostgreSQL"
-    elif "postgres" in db_types and len(db_types) == 1:
-        arch_name = "Custom: PostgreSQL Only"
-    elif "redis" in db_types and len(db_types) == 1:
-        arch_name = "Custom: Redis Only"
-    else:
-        arch_name = "Custom Configuration"
-    
-    # Summary
-    console.print("\n" + "-"*70)
-    console.print("[bold green]✓ Custom Architecture Configured![/bold green]")
-    console.print("-"*70)
-    
-    console.print("\n[bold]Provisioned Storage:[/bold]")
-    for db in databases:
-        db_icon = {"chromadb": "🔮", "redis": "🔴", "postgres": "🐘"}.get(db["type"], "💾")
-        console.print(f"  {db_icon} [cyan]{db['type'].title()} ({db['size']}):[/cyan] {db['purpose']}")
-    
-    console.print(f"\n[bold]Total Storage:[/bold] {total_gb}GB")
-    
-    console.print("\n[bold]What you get:[/bold]")
-    console.print("  ✓ Automatic provisioning (3-5 minutes)")
-    console.print("  ✓ Persistent storage across restarts")
-    console.print("  ✓ Automatic daily backups")
-    console.print("  ✓ [green]Included in subscription[/green]")
-    
-    if any(db.get("type") == "chromadb" for db in databases):
-        console.print("  ✓ [green]Free embeddings with FastEmbed[/green]")
-    
-    return {
-        "mode": "managed",
-        "architecture": "custom",
-        "architecture_name": arch_name,
-        "databases": databases
-    }
+            console.print("[red]Could not connect to Redis[/red]")
+            if not Confirm.ask("Continue anyway?", default=False):
+                raise typer.Exit(1)
+            databases.append({
+                "type": "redis",
+                "url": redis_url,
+                "purpose": "Cortex memory with RediSearch",
+                "verified": False
+            })
 
-
-def configure_byo_databases(analysis: dict):
-    """Configure bring-your-own databases with architecture guidance"""
-    
-    console.print("\n[yellow]✓ Bring Your Own Database (BYO-DB)[/yellow]")
-    console.print("[dim]Connect to your existing database infrastructure[/dim]")
-    
-    console.print("\n[bold]Based on your agent configuration, you'll need:[/bold]")
-    
-    needs = []
-    if analysis["uses_semantic_memory"]:
-        needs.append("• [cyan]Vector Database[/cyan]: ChromaDB, Pinecone, Weaviate, or PostgreSQL+pgvector")
-    if analysis["uses_episodic_memory"] or analysis["uses_procedural_memory"]:
-        needs.append("• [cyan]Key-Value Store[/cyan]: Redis (recommended) or PostgreSQL")
-    
-    for need in needs:
-        console.print(f"  {need}")
-    
-    console.print("\n[dim]Connection string examples:[/dim]")
-    console.print("  Redis:      [dim]redis://user:pass@your-redis.com:6379/0[/dim]")
-    console.print("  PostgreSQL: [dim]postgresql://user:pass@your-db.com:5432/teleon[/dim]")
-    console.print("  ChromaDB:   [dim]http://your-chroma.com:8000[/dim]")
-    
-    databases = []
-    
-    # ========================================
-    # Redis Configuration
-    # ========================================
-    if analysis["uses_episodic_memory"] or analysis["uses_procedural_memory"]:
-        console.print("\n[bold cyan]━━━ Key-Value Storage ━━━[/bold cyan]")
-        
-        kv_type = Prompt.ask(
-            "Backend type",
-            choices=["redis", "postgres"],
-            default="redis"
-        )
-        
-        if kv_type == "redis":
-            console.print("\n[bold]Redis Configuration:[/bold]")
-            redis_url = Prompt.ask("Redis URL", default="redis://localhost:6379/0")
-            
-            console.print("\n[dim]Testing connection...[/dim]")
-            if test_redis_connection(redis_url):
-                console.print("[green]✓ Redis connection successful[/green]")
-                databases.append({
-                    "type": "redis",
-                    "url": redis_url,
-                    "purpose": "Episodic & procedural memory"
-                })
-            else:
-                console.print("[red]❌ Could not connect to Redis[/red]")
-                if not Confirm.ask("Continue anyway?", default=False):
-                    raise typer.Exit(1)
-                databases.append({
-                    "type": "redis",
-                    "url": redis_url,
-                    "purpose": "Episodic & procedural memory",
-                    "verified": False
-                })
-        else:
-            console.print("\n[bold]PostgreSQL Configuration (for key-value):[/bold]")
-            postgres_url = Prompt.ask("PostgreSQL URL", default="postgresql://localhost:5432/teleon")
-            
-            console.print("\n[dim]Testing connection...[/dim]")
-            if test_postgres_connection(postgres_url):
-                console.print("[green]✓ PostgreSQL connection successful[/green]")
-                databases.append({
-                    "type": "postgres",
-                    "url": postgres_url,
-                    "purpose": "Episodic & procedural memory"
-                })
-            else:
-                console.print("[red]❌ Could not connect to PostgreSQL[/red]")
-                if not Confirm.ask("Continue anyway?", default=False):
-                    raise typer.Exit(1)
-                databases.append({
-                    "type": "postgres",
-                    "url": postgres_url,
-                    "purpose": "Episodic & procedural memory",
-                    "verified": False
-                })
-    
-    # ========================================
-    # Vector Database Configuration
-    # ========================================
-    if analysis["uses_semantic_memory"]:
-        console.print("\n[bold cyan]━━━ Vector Storage (Semantic Memory) ━━━[/bold cyan]")
-        
-        # Check if PostgreSQL already configured
-        has_postgres = any(db.get("type") == "postgres" for db in databases)
-        
-        vector_choices = ["chromadb", "postgres_pgvector", "pinecone", "weaviate"]
-        if has_postgres:
-            console.print("\n[dim]You can use your existing PostgreSQL with pgvector extension[/dim]")
-        
-        console.print("\n[bold]Choose vector database:[/bold]")
-        console.print("  1. chromadb       - Self-hosted ChromaDB")
-        console.print("  2. postgres_pgvector - PostgreSQL + pgvector")
-        console.print("  3. pinecone       - Pinecone (managed)")
-        console.print("  4. weaviate       - Weaviate")
-        
-        vector_type = Prompt.ask("Vector backend", choices=["1", "2", "3", "4"], default="1")
-        
-        if vector_type == "1":
-            chroma_url = Prompt.ask("ChromaDB URL", default="http://localhost:8000")
-            databases.append({
-                "type": "chromadb",
-                "url": chroma_url,
-                "purpose": "Semantic memory (vectors)"
-            })
-            console.print("[green]✓ ChromaDB configured[/green]")
-            
-        elif vector_type == "2":
-            if has_postgres:
-                # Use existing PostgreSQL
-                for db in databases:
-                    if db["type"] == "postgres":
-                        db["purpose"] = "All memory types (with pgvector)"
-                        db["pgvector"] = True
-                console.print("[green]✓ Using existing PostgreSQL with pgvector[/green]")
-            else:
-                postgres_url = Prompt.ask("PostgreSQL URL", default="postgresql://localhost:5432/teleon")
-                databases.append({
-                    "type": "postgres",
-                    "url": postgres_url,
-                    "purpose": "Semantic memory with pgvector",
-                    "pgvector": True
-                })
-                console.print("[green]✓ PostgreSQL + pgvector configured[/green]")
-                
-        elif vector_type == "3":
-            pinecone_api_key = Prompt.ask("Pinecone API Key")
-            pinecone_env = Prompt.ask("Pinecone Environment", default="us-east-1-aws")
-            databases.append({
-                "type": "pinecone",
-                "api_key": pinecone_api_key,
-                "environment": pinecone_env,
-                "purpose": "Semantic memory (vectors)"
-            })
-            console.print("[green]✓ Pinecone configured[/green]")
-            
-        elif vector_type == "4":
-            weaviate_url = Prompt.ask("Weaviate URL", default="http://localhost:8080")
-            databases.append({
-                "type": "weaviate",
-                "url": weaviate_url,
-                "purpose": "Semantic memory (vectors)"
-            })
-            console.print("[green]✓ Weaviate configured[/green]")
-    
-    # Summary
     console.print("\n" + "-"*70)
     console.print("[bold yellow]✓ BYO-DB Configuration Complete[/bold yellow]")
     console.print("-"*70)
-    
-    console.print("\n[bold]Configured Databases:[/bold]")
-    for db in databases:
-        db_icon = {"chromadb": "🔮", "redis": "🔴", "postgres": "🐘", "pinecone": "🌲", "weaviate": "🔷"}.get(db["type"], "💾")
-        verified = db.get("verified", True)
-        status = "[green]verified[/green]" if verified else "[yellow]unverified[/yellow]"
-        console.print(f"  {db_icon} [cyan]{db['type'].title()}[/cyan]: {db['purpose']} ({status})")
-    
-    console.print("\n[bold yellow]⚠️  Important Notes:[/bold yellow]")
+
+    db = databases[0]
+    db_icon = {"redis": "🔴", "postgres": "🐘"}.get(db["type"], "💾")
+    verified = db.get("verified", True)
+    status = "[green]verified[/green]" if verified else "[yellow]unverified[/yellow]"
+    console.print(f"\n  {db_icon} [cyan]{db['type'].title()}[/cyan]: {db['purpose']} ({status})")
+
+    console.print("\n[bold yellow]Important:[/bold yellow]")
     console.print("  • You are responsible for database backups & maintenance")
-    console.print("  • Ensure databases are accessible from Teleon infrastructure")
-    console.print("  • Consider using private endpoints for security")
-    
+    console.print("  • Ensure the database is accessible from Teleon infrastructure")
+    console.print("  • SSL connections are strongly recommended")
+
     return {
         "mode": "byo",
-        "architecture": "byo",
-        "architecture_name": "Bring Your Own Database",
+        "architecture": f"byo_{db['type']}",
+        "architecture_name": f"BYO {db['type'].title()}",
         "databases": databases
     }
 
@@ -1571,25 +948,22 @@ def show_deployment_plan(agents, database_config, env):
     table.add_column("Scaling", style="magenta", width=12)
     
     for agent in agents:
-        memory_types = []
+        memory_info = ""
         features = []
-        
+
         if agent.get("uses_cortex"):
-            if agent.get("uses_chromadb") or agent.get("uses_semantic_memory"):
-                memory_types.append("Semantic")
-            memory_types.append("Episodic")
-            memory_types.append("Procedural")
+            memory_info = "Cortex Memory"
             features.append("Cortex")
-        
+
         if agent.get("uses_helix"):
             features.append("Auto-scale")
-        
+
         if agent.get("uses_sentinel"):
             features.append("Sentinel")
-        
+
         table.add_row(
             agent["name"],
-            ", ".join(memory_types) if memory_types else "[dim]None[/dim]",
+            memory_info if memory_info else "[dim]None[/dim]",
             ", ".join(features) if features else "[dim]Basic[/dim]",
             "1-10" if agent.get("uses_helix") else "1"
         )
@@ -1601,131 +975,61 @@ def show_deployment_plan(agents, database_config, env):
     # ========================================
     if database_config:
         console.print("\n" + "-"*70)
-        
+
         arch_name = database_config.get("architecture_name", "Unknown")
-        arch_id = database_config.get("architecture", "unknown")
         mode = database_config.get("mode", "managed")
-        
-        # Get architecture icon
-        arch_icons = {
-            "hybrid_speed": "⚡",
-            "hybrid_analytics": "📊",
-            "unified_postgres": "🐘",
-            "unified_redis": "🔴",
-            "custom": "🔧",
-            "byo": "🔌"
-        }
-        arch_icon = arch_icons.get(arch_id, "💾")
-        
-        if mode == "managed":
-            console.print(f"[bold cyan]{arch_icon} Storage Architecture:[/bold cyan] [green]{arch_name}[/green]")
-            console.print(f"[dim]Mode: Managed by Teleon (zero ops)[/dim]")
-        else:
-            console.print(f"[bold cyan]{arch_icon} Storage Architecture:[/bold cyan] [yellow]{arch_name}[/yellow]")
-            console.print(f"[dim]Mode: Bring Your Own Database[/dim]")
-        
-        # Storage breakdown table
-        storage_table = Table(
-            show_header=True,
-            header_style="bold",
-            border_style="dim",
-            padding=(0, 1),
-            expand=False
-        )
-        storage_table.add_column("Database", style="cyan", width=15)
-        storage_table.add_column("Purpose", style="white", width=35)
-        storage_table.add_column("Size/Status", style="green", width=15, justify="right")
-        
         databases = database_config.get("databases", [])
-        total_size = 0
-        
+        db_type = databases[0]["type"] if databases else "postgres"
+        db_icon = {"redis": "🔴", "postgres": "🐘"}.get(db_type, "💾")
+
+        if mode == "managed":
+            console.print(f"[bold cyan]{db_icon} Storage:[/bold cyan] [green]{arch_name}[/green]")
+            console.print("[dim]Mode: Managed by Teleon (zero ops)[/dim]")
+        else:
+            console.print(f"[bold cyan]{db_icon} Storage:[/bold cyan] [yellow]{arch_name}[/yellow]")
+            console.print("[dim]Mode: Bring Your Own Database[/dim]")
+
         for db in databases:
-            db_icon = {"chromadb": "🔮", "redis": "🔴", "postgres": "🐘", "pinecone": "🌲", "weaviate": "🔷"}.get(db["type"], "💾")
-            db_name = f"{db_icon} {db['type'].title()}"
+            icon = {"redis": "🔴", "postgres": "🐘"}.get(db["type"], "💾")
             purpose = db.get("purpose", "Storage")
-            
-            if mode == "managed":
-                size = db.get("size", "N/A")
-                if "GB" in str(size):
-                    total_size += int(size.replace("GB", ""))
-                storage_table.add_row(db_name, purpose, size)
-            else:
+            if mode == "byo":
                 verified = db.get("verified", True)
                 status = "[green]✓ Connected[/green]" if verified else "[yellow]⚠ Unverified[/yellow]"
-                storage_table.add_row(db_name, purpose, status)
-        
-        console.print("")
-        console.print(storage_table)
-        
-        if mode == "managed" and total_size > 0:
-            console.print(f"\n[bold]Total Storage:[/bold] {total_size}GB [green](included)[/green]")
-    
+                console.print(f"  {icon} [cyan]{db['type'].title()}[/cyan]: {purpose} ({status})")
+            else:
+                console.print(f"  {icon} [cyan]{db['type'].title()}[/cyan]: {purpose}")
+
     # ========================================
     # ARCHITECTURE DIAGRAM
     # ========================================
-    if database_config and database_config.get("mode") == "managed":
-        arch_id = database_config.get("architecture", "")
-        
+    if database_config:
+        databases = database_config.get("databases", [])
+        db_type = databases[0]["type"] if databases else "postgres"
+
         console.print("\n" + "-"*70)
         console.print("[bold]Data Flow:[/bold]")
-        
-        if arch_id == "hybrid_speed" or (arch_id == "custom" and 
-            any(db["type"] == "chromadb" for db in database_config.get("databases", [])) and
-            any(db["type"] == "redis" for db in database_config.get("databases", []))):
-            console.print("""
-    ┌─────────────┐    ┌──────────────────────────────────────────────┐
-    │   Agent     │───▶│               Cortex Memory                  │
-    └─────────────┘    │  ┌─────────────┐   ┌───────────────────────┐ │
-                       │  │ Working     │   │ 🔮 ChromaDB           │ │
-                       │  │ (RAM)       │   │    Semantic Memory    │ │
-                       │  └─────────────┘   │    [green]FastEmbed (free)[/green]   │ │
-                       │                    └───────────────────────┘ │
-                       │  ┌─────────────────────────────────────────┐ │
-                       │  │ 🔴 Redis                                │ │
-                       │  │    Episodic + Procedural Memory         │ │
-                       │  │    [cyan]~1ms latency[/cyan]                        │ │
-                       │  └─────────────────────────────────────────┘ │
-                       └──────────────────────────────────────────────┘
-""")
-        elif arch_id == "hybrid_analytics" or (arch_id == "custom" and
-            any(db["type"] == "chromadb" for db in database_config.get("databases", [])) and
-            any(db["type"] == "postgres" for db in database_config.get("databases", []))):
-            console.print("""
-    ┌─────────────┐    ┌──────────────────────────────────────────────┐
-    │   Agent     │───▶│               Cortex Memory                  │
-    └─────────────┘    │  ┌─────────────┐   ┌───────────────────────┐ │
-                       │  │ Working     │   │ 🔮 ChromaDB           │ │
-                       │  │ (RAM)       │   │    Semantic Memory    │ │
-                       │  └─────────────┘   │    [green]FastEmbed (free)[/green]   │ │
-                       │                    └───────────────────────┘ │
-                       │  ┌─────────────────────────────────────────┐ │
-                       │  │ 🐘 PostgreSQL                           │ │
-                       │  │    Episodic + Procedural Memory         │ │
-                       │  │    [cyan]Full SQL + ACID[/cyan]                     │ │
-                       │  └─────────────────────────────────────────┘ │
-                       └──────────────────────────────────────────────┘
-""")
-        elif arch_id == "unified_postgres":
+
+        if db_type == "postgres":
             console.print("""
     ┌─────────────┐    ┌──────────────────────────────────────────────┐
     │   Agent     │───▶│               Cortex Memory                  │
     └─────────────┘    │  ┌─────────────┐   ┌───────────────────────┐ │
                        │  │ Working     │   │ 🐘 PostgreSQL         │ │
                        │  │ (RAM)       │   │    [yellow]pgvector[/yellow]            │ │
-                       │  └─────────────┘   │    All Memory Types   │ │
+                       │  └─────────────┘   │    All Memory          │ │
                        │                    │    [cyan]Full SQL + ACID[/cyan]     │ │
                        │                    └───────────────────────┘ │
                        └──────────────────────────────────────────────┘
 """)
-        elif arch_id == "unified_redis":
+        elif db_type == "redis":
             console.print("""
     ┌─────────────┐    ┌──────────────────────────────────────────────┐
     │   Agent     │───▶│               Cortex Memory                  │
     └─────────────┘    │  ┌─────────────┐   ┌───────────────────────┐ │
                        │  │ Working     │   │ 🔴 Redis              │ │
-                       │  │ (RAM)       │   │    All Memory Types   │ │
-                       │  └─────────────┘   │    [cyan]~1ms latency[/cyan]       │ │
-                       │                    │    [yellow]Limited vectors[/yellow]   │ │
+                       │  │ (RAM)       │   │    [yellow]RediSearch[/yellow]          │ │
+                       │  └─────────────┘   │    All Memory          │ │
+                       │                    │    [cyan]~1ms latency[/cyan]       │ │
                        │                    └───────────────────────┘ │
                        └──────────────────────────────────────────────┘
 """)
@@ -1750,11 +1054,6 @@ def show_deployment_plan(agents, database_config, env):
     if database_config:
         if database_config["mode"] == "managed":
             cost_table.add_row("Storage (managed, backed up)", "[green]Included ✓[/green]")
-            
-            uses_chromadb = any(db.get("type") == "chromadb" for db in database_config.get("databases", []))
-            if uses_chromadb:
-                cost_table.add_row("Embeddings (FastEmbed)", "[green]$0/month (free!)[/green]")
-            
             cost_table.add_row("Monitoring & Dashboard", "[green]Included ✓[/green]")
             cost_table.add_row("Automatic Backups (7-day)", "[green]Included ✓[/green]")
             cost_table.add_row("", "")
@@ -2018,10 +1317,10 @@ def deploy_to_platform(agents, database_config, env, project_name):
                 if postgres_db and postgres_db.get("url"):
                     data['postgres_url'] = postgres_db["url"]
                 
-                # Find ChromaDB URL if present
-                chroma_db = next((db for db in database_config.get("databases", []) if db["type"] == "chromadb"), None)
-                if chroma_db and chroma_db.get("url"):
-                    data['chromadb_url'] = chroma_db["url"]
+                # Pass BYO connection URL if present
+                for db in database_config.get("databases", []):
+                    if db.get("url"):
+                        data[f'{db["type"]}_url'] = db["url"]
         
         response = httpx.post(
             f"{platform_url}/api/v1/deployments",
@@ -2123,12 +1422,7 @@ def deploy_to_platform(agents, database_config, env, project_name):
             if database_config["mode"] == "managed":
                 console.print(f"\n  💾 [bold]Provisioned Storage:[/bold]")
                 for db in database_config.get("databases", []):
-                    db_type = db["type"].upper() if db["type"] == "chromadb" else db["type"].title()
-                    console.print(f"     • [green]{db_type}[/green] ({db['size']}) - {db['purpose']}")
-                
-                # Special note for ChromaDB
-                if any(db.get("type") == "chromadb" for db in database_config.get("databases", [])):
-                    console.print(f"     [dim]✓ Free embeddings enabled (no API costs!)[/dim]")
+                    console.print(f"     • [green]{db['type'].title()}[/green] - {db['purpose']}")
             else:
                 console.print(f"  💾 Databases: [yellow]External (BYO-DB)[/yellow]")
         
