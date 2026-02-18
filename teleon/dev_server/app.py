@@ -11,7 +11,6 @@ It automatically discovers agents and provides:
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import secrets
@@ -121,18 +120,9 @@ def create_dev_server(
 
     platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
     dashboard_url = os.getenv("TELEON_DASHBOARD_URL", "https://dashboard.teleon.ai")
-    better_auth_url = os.getenv(
-        "TELEON_AUTH_URL",
-        os.getenv("BETTER_AUTH_URL", "https://auth.teleon.ai"),
-    )
     auth_cookie_name = os.getenv("TELEON_DEV_SERVER_AUTH_COOKIE", "teleon_auth_token")
     auth_cache_ttl_seconds = int(os.getenv("TELEON_DEV_SERVER_AUTH_CACHE_TTL", "300"))
     auth_validation_cache: Dict[str, dict] = {}
-
-    BETTER_AUTH_COOKIE_NAMES = (
-        "__Secure-better-auth.session_token",
-        "better-auth.session_token",
-    )
 
     # Stable deployment ID set at deploy time (env var injected by the deployer).
     deployment_id = os.getenv("TELEON_DEPLOYMENT_ID", "")
@@ -308,58 +298,6 @@ def create_dev_server(
         except Exception:
             return None
 
-    def _get_session_token(request: Request) -> Optional[str]:
-        """Extract the Better Auth session token from the request cookies."""
-        for name in BETTER_AUTH_COOKIE_NAMES:
-            val = request.cookies.get(name)
-            if val:
-                return val
-        return None
-
-    def _session_cookie_dict(session_token: str) -> dict:
-        """Build the cookie dict to forward when calling Better Auth."""
-        return {name: session_token for name in BETTER_AUTH_COOKIE_NAMES}
-
-    async def validate_better_auth_session(session_token: str) -> Optional[dict]:
-        """Validate a Better Auth session token against the auth service.
-
-        Returns the session payload (including ``user`` dict) on success, or
-        ``None`` if the session is invalid/expired.
-        """
-        if not session_token:
-            return None
-
-        cache_key = f"ba_session:{session_token[:16]}"
-        now = datetime.now(timezone.utc)
-        cached = auth_validation_cache.get(cache_key)
-        if cached and cached.get("expires_at") and cached["expires_at"] > now:
-            return cached.get("data")
-
-        if not HTTPX_AVAILABLE:
-            return None
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{better_auth_url}/api/auth/get-session",
-                    cookies=_session_cookie_dict(session_token),
-                )
-            if resp.status_code != 200:
-                return None
-
-            data = resp.json()
-            if not data or not data.get("user"):
-                return None
-
-            auth_validation_cache[cache_key] = {
-                "expires_at": now + timedelta(seconds=auth_cache_ttl_seconds),
-                "data": data,
-            }
-            return data
-        except Exception as e:
-            logger.warning(f"Better Auth session validation failed: {e}")
-            return None
-
     def extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
         if not authorization:
             return None
@@ -376,6 +314,8 @@ def create_dev_server(
 
     class PlatformAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
+            _cleanup_expired_sessions()
+
             forwarded_host = request.headers.get("x-forwarded-host")
             host = forwarded_host or request.headers.get("host") or ""
             deployed_host = (not is_local_host(host))
@@ -390,29 +330,28 @@ def create_dev_server(
                 return await call_next(request)
 
             authenticated = False
+            token = request.cookies.get(auth_cookie_name)
 
-            if deployed_host:
-                # --- Deployed agents: use Better Auth session cookie ---
-                session_token = _get_session_token(request)
-                ownership_cookie = request.cookies.get(auth_cookie_name) or ""
+            if token:
+                # Check local session first (set by auth-code callback)
+                session = local_sessions.get(token)
+                if session:
+                    if session["expires_at"] > datetime.now(timezone.utc):
+                        authenticated = True
+                    else:
+                        local_sessions.pop(token, None)
 
-                if session_token and ownership_cookie.startswith("verified:"):
-                    expected = "verified:" + hashlib.sha256(session_token.encode()).hexdigest()[:16]
-                    if ownership_cookie == expected:
-                        session_data = await validate_better_auth_session(session_token)
-                        if session_data:
-                            authenticated = True
+                # Fall back to platform API key validation (local dev / CLI)
+                if not authenticated:
+                    valid = await validate_platform_api_key(token)
+                    if valid:
+                        authenticated = True
 
             if not authenticated:
-                # --- Localhost / fallback: API key cookie or Authorization header ---
-                token = request.cookies.get(auth_cookie_name)
-                if not token or token.startswith("verified:"):
-                    token = None
-                if not token:
-                    token = extract_bearer_token(request.headers.get("authorization"))
-
-                if token:
-                    valid = await validate_platform_api_key(token)
+                # Also check Authorization header (API clients)
+                bearer = extract_bearer_token(request.headers.get("authorization"))
+                if bearer:
+                    valid = await validate_platform_api_key(bearer)
                     if valid:
                         authenticated = True
 
@@ -786,139 +725,111 @@ text-decoration:none;transition:all .2s ease}}
 </html>"""
         return HTMLResponse(content=html, status_code=403)
 
-    async def _check_ownership_and_record_violation(
-        auth_headers: dict,
-        auth_cookies: dict,
-    ) -> tuple[bool, Optional[HTMLResponse]]:
-        """Verify deployment ownership via the platform API.
+    # Local sessions: maps a random token → user info.  Set at /auth/callback
+    # after a successful auth-code exchange + ownership check.
+    local_sessions: Dict[str, dict] = {}
+    _last_session_cleanup = datetime.now(timezone.utc)
 
-        Returns ``(True, None)`` on success, or ``(False, error_response)`` on
-        failure (including violation recording and ban pages).
-        """
-        if not deployment_id:
-            logger.error("TELEON_DEPLOYMENT_ID not set — cannot verify ownership")
-            return False, HTMLResponse(
-                "<h2>Server misconfigured</h2>"
-                "<p>TELEON_DEPLOYMENT_ID is not set. Cannot verify agent ownership.</p>",
-                status_code=500,
-            )
-
-        ownership_ok = False
-        if HTTPX_AVAILABLE:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(
-                        f"{platform_url}/api/v1/auth/verify-agent-ownership",
-                        headers=auth_headers,
-                        cookies=auth_cookies,
-                        json={"deployment_id": deployment_id},
-                    )
-                if resp.status_code == 200:
-                    ownership_ok = resp.json().get("owned", False)
-                else:
-                    logger.warning(f"Ownership check returned {resp.status_code}: {resp.text}")
-            except Exception as e:
-                logger.error(f"Ownership check failed (denying access): {e}")
-
-        if ownership_ok:
-            return True, None
-
-        # Record the violation
-        violation_data: dict = {"violations": 1, "is_banned": False, "message": "Ownership check failed."}
-        if HTTPX_AVAILABLE:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    vresp = await client.post(
-                        f"{platform_url}/api/v1/auth/record-violation",
-                        headers=auth_headers,
-                        cookies=auth_cookies,
-                        json={"deployment_id": deployment_id},
-                    )
-                if vresp.status_code == 200:
-                    violation_data = vresp.json()
-            except Exception as e:
-                logger.warning(f"Failed to record violation: {e}")
-
-        return False, _render_violation_page(
-            violation_data.get("message", ""),
-            violation_data.get("is_banned", False),
-        )
+    def _cleanup_expired_sessions() -> None:
+        """Remove expired entries from local_sessions (at most once per minute)."""
+        nonlocal _last_session_cleanup
+        now = datetime.now(timezone.utc)
+        if (now - _last_session_cleanup).total_seconds() < 60:
+            return
+        _last_session_cleanup = now
+        expired = [k for k, v in local_sessions.items() if v["expires_at"] <= now]
+        for k in expired:
+            local_sessions.pop(k, None)
+        if expired:
+            logger.debug(f"Cleaned up {len(expired)} expired local sessions")
 
     @app.get("/auth/callback")
     async def auth_callback(request: Request):
         """Callback after the user logs in on the Teleon dashboard.
 
-        Deployed agents (*.agents.teleon.ai) use the Better Auth session cookie
-        that was set when the user logged into the dashboard (same parent domain
-        ``.teleon.ai``).  No secrets travel in the URL.
+        The dashboard creates a short-lived, single-use auth code and passes
+        it as ``?code=…``.  This endpoint exchanges it server-to-server with
+        the platform API for user identity and an ownership verdict.  No API
+        keys or session cookies travel in the browser URL.
 
-        Local dev (localhost) falls back to an API key passed as a query param
-        because cross-domain cookies are not available.
+        For local dev (``?api_key=…``), the legacy API-key path is preserved
+        because the auth-code flow requires the platform API to be reachable.
         """
-        forwarded_host = request.headers.get("x-forwarded-host")
-        host = forwarded_host or request.headers.get("host") or ""
-        deployed = not is_local_host(host)
         is_https = (request.url.scheme == "https"
                     or request.headers.get("x-forwarded-proto") == "https")
 
-        if deployed:
-            # ── Deployed path: Better Auth session cookie ──
-            session_token = _get_session_token(request)
-            if not session_token:
-                logger.warning("No Better Auth session cookie on /auth/callback")
+        code = (request.query_params.get("code") or "").strip()
+        api_key = (request.query_params.get("api_key") or "").strip()
+
+        if code and HTTPX_AVAILABLE:
+            # ── Auth-code exchange (primary path) ──
+            if not deployment_id:
+                logger.error("TELEON_DEPLOYMENT_ID not set — cannot verify ownership")
+                return HTMLResponse(
+                    "<h2>Server misconfigured</h2>"
+                    "<p>TELEON_DEPLOYMENT_ID is not set. Cannot verify agent ownership.</p>",
+                    status_code=500,
+                )
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        f"{platform_url}/api/v1/auth/exchange-auth-code",
+                        json={"code": code, "deployment_id": deployment_id},
+                    )
+            except Exception as e:
+                logger.error(f"Auth-code exchange failed: {e}")
                 return RedirectResponse(url="/login", status_code=302)
 
-            session_data = await validate_better_auth_session(session_token)
-            if not session_data or not session_data.get("user"):
-                logger.warning("Better Auth session invalid at /auth/callback")
+            if resp.status_code == 401:
+                logger.warning("Auth code invalid or expired")
+                return RedirectResponse(url="/login", status_code=302)
+            if resp.status_code == 403:
+                return _render_violation_page(resp.json().get("detail", "Access denied"), True)
+            if resp.status_code != 200:
+                logger.warning(f"Auth-code exchange returned {resp.status_code}: {resp.text}")
                 return RedirectResponse(url="/login", status_code=302)
 
-            # Forward the session cookie to the platform for ownership check
-            cookies_to_forward = _session_cookie_dict(session_token)
-            owned, err_resp = await _check_ownership_and_record_violation(
-                auth_headers={},
-                auth_cookies=cookies_to_forward,
-            )
-            if not owned:
-                cache_key = f"ba_session:{session_token[:16]}"
-                auth_validation_cache.pop(cache_key, None)
-                return err_resp
+            data = resp.json()
+            owned = data.get("owned")
+            violation = data.get("violation")
 
-            # Ownership verified — set a local marker cookie tied to this
-            # session so the middleware can skip the ownership check on
-            # subsequent requests.
-            session_hash = hashlib.sha256(session_token.encode()).hexdigest()[:16]
-            resp = RedirectResponse(url="/", status_code=302)
-            resp.set_cookie(
+            if owned is False and violation:
+                return _render_violation_page(
+                    violation.get("message", ""),
+                    violation.get("is_banned", False),
+                )
+
+            if owned is False:
+                return _render_violation_page("Ownership verification failed.", False)
+
+            # Ownership verified (or no deployment_id check was requested).
+            # Create a local session token and set it as a cookie.
+            session_token = secrets.token_urlsafe(32)
+            local_sessions[session_token] = {
+                "user_id": data.get("user_id"),
+                "email": data.get("email"),
+                "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+            }
+            resp_redirect = RedirectResponse(url="/", status_code=302)
+            resp_redirect.set_cookie(
                 auth_cookie_name,
-                f"verified:{session_hash}",
+                session_token,
                 httponly=True,
                 secure=is_https,
                 samesite="lax",
                 max_age=60 * 60 * 24 * 7,
             )
-            return resp
+            return resp_redirect
 
-        else:
-            # ── Local dev path: API key in query param ──
-            api_key = (request.query_params.get("api_key") or "").strip()
-            if not api_key:
-                return RedirectResponse(url="/login", status_code=302)
-
+        elif api_key:
+            # ── Legacy API-key path (local dev / CLI) ──
             valid = await validate_platform_api_key(api_key)
             if not valid:
                 return RedirectResponse(url="/login", status_code=302)
 
-            owned, err_resp = await _check_ownership_and_record_violation(
-                auth_headers={"X-API-Key": api_key},
-                auth_cookies={},
-            )
-            if not owned:
-                auth_validation_cache.pop(api_key, None)
-                return err_resp
-
-            resp = RedirectResponse(url="/", status_code=302)
-            resp.set_cookie(
+            resp_redirect = RedirectResponse(url="/", status_code=302)
+            resp_redirect.set_cookie(
                 auth_cookie_name,
                 api_key,
                 httponly=True,
@@ -926,10 +837,16 @@ text-decoration:none;transition:all .2s ease}}
                 samesite="lax",
                 max_age=60 * 60 * 24 * 7,
             )
-            return resp
+            return resp_redirect
+
+        else:
+            return RedirectResponse(url="/login", status_code=302)
 
     @app.get("/logout")
-    async def logout():
+    async def logout(request: Request):
+        token = request.cookies.get(auth_cookie_name)
+        if token:
+            local_sessions.pop(token, None)
         resp = RedirectResponse(url="/login", status_code=302)
         resp.delete_cookie(auth_cookie_name)
         return resp
