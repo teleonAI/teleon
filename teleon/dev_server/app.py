@@ -119,6 +119,7 @@ def create_dev_server(
     require_login = require_login or (not is_dev_mode)
 
     platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
+    dashboard_url = os.getenv("TELEON_DASHBOARD_URL", "https://app.teleon.ai")
     auth_cookie_name = os.getenv("TELEON_DEV_SERVER_AUTH_COOKIE", "teleon_auth_token")
     auth_cache_ttl_seconds = int(os.getenv("TELEON_DEV_SERVER_AUTH_CACHE_TTL", "300"))
     auth_validation_cache: Dict[str, dict] = {}
@@ -319,7 +320,8 @@ def create_dev_server(
                 return await call_next(request)
 
             path = request.url.path
-            if path.startswith("/login") or path.startswith("/logout") or path == "/health":
+            if (path.startswith("/login") or path.startswith("/logout")
+                    or path.startswith("/auth/callback") or path == "/health"):
                 return await call_next(request)
 
             token = request.cookies.get(auth_cookie_name)
@@ -333,10 +335,7 @@ def create_dev_server(
             accept = request.headers.get("accept", "")
             wants_html = "text/html" in accept
             if wants_html and request.method == "GET":
-                next_url = request.url.path
-                if request.url.query:
-                    next_url = f"{next_url}?{request.url.query}"
-                return RedirectResponse(url=f"/login?next={urllib.parse.quote(next_url)}", status_code=302)
+                return RedirectResponse(url="/login", status_code=302)
 
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
 
@@ -600,106 +599,173 @@ curl -X POST http://localhost:8000/invoke \\
         )
         return HTMLResponse(content=content)
 
+    def _build_dashboard_login_url(request: Request) -> str:
+        """Build the URL that redirects the user to the Teleon dashboard to log in."""
+        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
+        origin = f"{forwarded_proto}://{forwarded_host}"
+        callback = f"{origin}/auth/callback"
+
+        agent_ids = ",".join(discovered_agents.keys())
+        params = urllib.parse.urlencode({
+            "devserver": "true",
+            "callback": callback,
+            "agent_ids": agent_ids,
+        })
+        return f"{dashboard_url}/login?{params}"
+
     @app.get("/login")
-    async def login_page(next: str = "/"):
-        next = next or "/"
-        safe_next = next if next.startswith("/") else "/"
-        template = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Teleon Login</title>
-                <style>
-                    body {{ font-family: -apple-system, sans-serif; background: #000; color: #e0e0e0; padding: 40px; }}
-                    h1 {{ color: #00d4ff; }}
-                    .box {{ background: #0a0a0a; border: 1px solid #333; padding: 24px; border-radius: 10px; max-width: 520px; }}
-                    input {{ background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 12px; border-radius: 6px; width: 100%; box-sizing: border-box; margin: 12px 0; }}
-                    button {{ background: #00d4ff; color: #000; border: none; padding: 12px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; }}
-                    button:hover {{ background: #00aacc; }}
-                    .hint {{ color: #999; font-size: 13px; line-height: 1.5; }}
-                    .error {{ margin-top: 12px; color: #ff6b6b; font-size: 13px; display: none; }}
-                </style>
-            </head>
-            <body>
-                <h1>🔐 Teleon Login</h1>
-                <div class="box">
-                    <form id="loginForm">
-                        <input type="hidden" id="next" value="__SAFE_NEXT__" />
-                        <label for="api_key">Teleon API Key</label>
-                        <input id="api_key" type="password" placeholder="tlk_live_..." autocomplete="current-password" />
-                        <button type="submit">Sign in</button>
-                    </form>
-                    <div id="error" class="error"></div>
-                    <p class="hint">Use the same API key you use for <code>teleon login</code>. You can create/manage keys in the Teleon dashboard.</p>
-                </div>
-                <script>
-                    const form = document.getElementById('loginForm');
-                    const errorDiv = document.getElementById('error');
-                    form.addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        errorDiv.style.display = 'none';
-                        const apiKey = document.getElementById('api_key').value;
-                        const nextUrl = document.getElementById('next').value || '/';
-                        try {
-                            const resp = await fetch('/login', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ api_key: apiKey, next: nextUrl }),
-                                redirect: 'manual',
-                            });
-                            if (resp.status === 0 || resp.status === 302 || resp.status === 303) {
-                                const loc = resp.headers.get('location') || nextUrl;
-                                window.location.href = loc;
-                                return;
-                            }
-                            if (resp.ok) {
-                                const data = await resp.json().catch(() => null);
-                                window.location.href = (data && data.next) ? data.next : nextUrl;
-                                return;
-                            }
-                            const data = await resp.json().catch(() => null);
-                            errorDiv.textContent = (data && (data.detail || data.error)) ? (data.detail || data.error) : 'Login failed';
-                            errorDiv.style.display = 'block';
-                        } catch (err) {
-                            errorDiv.textContent = err && err.message ? err.message : 'Login failed';
-                            errorDiv.style.display = 'block';
-                        }
-                    });
-                </script>
-            </body>
-            </html>
-            """
+    async def login_page(request: Request):
+        login_url = _build_dashboard_login_url(request)
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Teleon - Login</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#000;color:#e0e0e0;display:flex;align-items:center;justify-content:center;
+min-height:100vh}}
+.container{{text-align:center;max-width:420px;padding:40px 24px}}
+.logo{{font-size:48px;margin-bottom:16px}}
+h1{{font-size:22px;color:#fff;margin-bottom:8px}}
+.sub{{color:#888;font-size:14px;margin-bottom:40px;line-height:1.5}}
+.btn{{display:inline-flex;align-items:center;justify-content:center;gap:10px;
+background:linear-gradient(135deg,#00d4ff 0%,#007cf0 100%);color:#000;
+border:none;padding:16px 40px;border-radius:10px;cursor:pointer;font-weight:700;
+font-size:16px;text-decoration:none;transition:all .2s ease;width:100%}}
+.btn:hover{{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,212,255,.35)}}
+.btn svg{{width:20px;height:20px}}
+.footer{{margin-top:48px;color:#555;font-size:12px}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="logo">&#x1F512;</div>
+<h1>Agent Authentication Required</h1>
+<p class="sub">Sign in with your Teleon account to access the agents running on this server.</p>
+<a href="{login_url}" class="btn">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+stroke-linecap="round" stroke-linejoin="round">
+<path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/>
+<polyline points="10 17 15 12 10 7"/>
+<line x1="15" y1="12" x2="3" y2="12"/>
+</svg>
+Login with Teleon Account
+</a>
+<p class="footer">You will be redirected to the Teleon dashboard to sign in.</p>
+</div>
+</body>
+</html>"""
+        return HTMLResponse(content=html, status_code=200)
 
-        template = template.replace("{{", "{").replace("}}", "}")
-        content = template.replace("__SAFE_NEXT__", safe_next)
-        return HTMLResponse(content=content, status_code=200)
+    def _render_violation_page(message: str, is_banned: bool) -> HTMLResponse:
+        """Render a full-page warning or ban notice."""
+        icon = "&#x1F6AB;" if is_banned else "&#x26A0;&#xFE0F;"
+        title = "Account Banned" if is_banned else "Access Denied"
+        btn_html = "" if is_banned else '<a href="/login" class="btn-back">Go Back</a>'
+        color = "#ff4444" if is_banned else "#ffaa00"
 
-    @app.post("/login")
-    async def login_submit(request: Request):
-        content_type = (request.headers.get("content-type") or "").lower()
-        api_key = ""
-        next = "/"
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Teleon - {title}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#000;color:#e0e0e0;display:flex;align-items:center;justify-content:center;
+min-height:100vh}}
+.container{{text-align:center;max-width:480px;padding:40px 24px}}
+.icon{{font-size:64px;margin-bottom:20px}}
+h1{{font-size:24px;color:{color};margin-bottom:12px}}
+.msg{{color:#ccc;font-size:15px;line-height:1.6;margin-bottom:32px;
+background:#0a0a0a;border:1px solid #333;border-radius:10px;padding:20px}}
+.btn-back{{display:inline-block;background:#333;color:#e0e0e0;border:none;
+padding:14px 32px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px;
+text-decoration:none;transition:all .2s ease}}
+.btn-back:hover{{background:#444}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="icon">{icon}</div>
+<h1>{title}</h1>
+<div class="msg">{message}</div>
+{btn_html}
+</div>
+</body>
+</html>"""
+        return HTMLResponse(content=html, status_code=403)
 
-        try:
-            if "application/json" in content_type:
-                payload = await request.json()
-                api_key = (payload.get("api_key") or "").strip()
-                next = (payload.get("next") or "/").strip() or "/"
-            else:
-                body = (await request.body()).decode("utf-8", errors="ignore")
-                parsed = urllib.parse.parse_qs(body)
-                api_key = (parsed.get("api_key", [""])[0] or "").strip()
-                next = (parsed.get("next", ["/"])[0] or "/").strip() or "/"
-        except Exception:
-            api_key = ""
-            next = "/"
+    @app.get("/auth/callback")
+    async def auth_callback(request: Request):
+        """
+        Callback endpoint hit by the Teleon dashboard after the user logs in.
+        Validates the API key, checks agent ownership, and records violations.
+        """
+        api_key = (request.query_params.get("api_key") or "").strip()
+        user_id_param = (request.query_params.get("user_id") or "").strip()
 
-        safe_next = next if next.startswith("/") else "/"
+        if not api_key:
+            return RedirectResponse(url="/login", status_code=302)
+
+        # 1. Validate the API key with the platform
         valid = await validate_platform_api_key(api_key)
         if not valid:
-            return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
-        resp = RedirectResponse(url=safe_next, status_code=302)
-        is_https = request.url.scheme == "https"
+            return RedirectResponse(url="/login", status_code=302)
+
+        # 2. Determine the authenticated user's platform UUID
+        platform_user_id = (valid.get("user") or {}).get("id") or user_id_param
+
+        # 3. Check agent ownership via the platform API
+        agent_ids = list(discovered_agents.keys())
+        ownership_ok = True
+        if HTTPX_AVAILABLE and agent_ids and platform_user_id:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        f"{platform_url}/api/v1/auth/verify-agent-ownership",
+                        headers={"Authorization": f"Bearer {api_key}",
+                                 "X-API-Key": api_key},
+                        json={"agent_ids": agent_ids},
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("unauthorized_agents"):
+                        ownership_ok = False
+            except Exception as e:
+                logger.warning(f"Agent ownership check failed (allowing access): {e}")
+
+        # 4. If ownership fails, record a violation and show warning/ban page
+        if not ownership_ok:
+            violation_data = {"violations": 1, "is_banned": False,
+                              "message": "Ownership check failed."}
+            if HTTPX_AVAILABLE:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        vresp = await client.post(
+                            f"{platform_url}/api/v1/auth/record-violation",
+                            headers={"Authorization": f"Bearer {api_key}",
+                                     "X-API-Key": api_key},
+                            json={"agent_ids": agent_ids},
+                        )
+                    if vresp.status_code == 200:
+                        violation_data = vresp.json()
+                except Exception as e:
+                    logger.warning(f"Failed to record violation: {e}")
+
+            is_banned = violation_data.get("is_banned", False)
+            msg = violation_data.get("message", "")
+            return _render_violation_page(msg, is_banned)
+
+        # 5. Ownership verified – set auth cookie and redirect to home
+        resp = RedirectResponse(url="/", status_code=302)
+        is_https = (request.url.scheme == "https"
+                    or request.headers.get("x-forwarded-proto") == "https")
         resp.set_cookie(
             auth_cookie_name,
             api_key,
