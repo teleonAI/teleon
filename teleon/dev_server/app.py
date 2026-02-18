@@ -119,7 +119,7 @@ def create_dev_server(
     require_login = require_login or (not is_dev_mode)
 
     platform_url = os.getenv("TELEON_PLATFORM_URL", "https://api.teleon.ai")
-    dashboard_url = os.getenv("TELEON_DASHBOARD_URL", "https://app.teleon.ai")
+    dashboard_url = os.getenv("TELEON_DASHBOARD_URL", "https://dashboard.teleon.ai")
     auth_cookie_name = os.getenv("TELEON_DEV_SERVER_AUTH_COOKIE", "teleon_auth_token")
     auth_cache_ttl_seconds = int(os.getenv("TELEON_DEV_SERVER_AUTH_CACHE_TTL", "300"))
     auth_validation_cache: Dict[str, dict] = {}
