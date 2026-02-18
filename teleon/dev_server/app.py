@@ -629,6 +629,13 @@ curl -X POST http://localhost:8000/invoke \\
         """Build the URL that redirects the user to the Teleon dashboard to log in."""
         forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
         forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
+
+        # ALBs terminate TLS and forward as HTTP internally; the
+        # x-forwarded-proto header may be missing in some configs.
+        # Force HTTPS for any non-localhost host.
+        if not is_local_host(forwarded_host):
+            forwarded_proto = "https"
+
         origin = f"{forwarded_proto}://{forwarded_host}"
         callback = f"{origin}/auth/callback"
 
