@@ -1,10 +1,16 @@
 """
 Embedding service with tier-based model selection.
+
+Priority order:
+1. Teleon centralized service (when TELEON_EMBEDDING_URL is set — managed deployments)
+2. OpenAI (paid tier, requires OPENAI_API_KEY)
+3. FastEmbed (free tier, local model)
 """
 
 from typing import List, Optional, Dict, Any
 import logging
 import hashlib
+import os
 
 from teleon.cortex.embeddings.base import EmbeddingModel, EMBEDDING_DIMENSION
 
@@ -73,21 +79,37 @@ class EmbeddingService:
         logger.info(f"Embedding service initialized (paid_tier={is_paid_tier})")
 
     def _get_model(self) -> EmbeddingModel:
-        """Get or create embedding model based on tier."""
+        """
+        Get or create embedding model.
+
+        Selection priority:
+        1. Teleon centralized service (TELEON_EMBEDDING_URL env var)
+        2. OpenAI (paid tier + OPENAI_API_KEY)
+        3. FastEmbed (local fallback)
+        """
         if self._model is None:
-            if self._is_paid_tier:
+            embedding_url = os.getenv("TELEON_EMBEDDING_URL", "")
+
+            if embedding_url:
+                try:
+                    from teleon.cortex.embeddings.teleon import TeleonEmbedModel
+                    self._model = TeleonEmbedModel(embedding_url=embedding_url)
+                    logger.info(f"Using Teleon centralized embeddings ({embedding_url})")
+                except (ImportError, ValueError) as e:
+                    logger.warning(f"Teleon embedding service not available: {e}")
+
+            if self._model is None and self._is_paid_tier:
                 try:
                     from teleon.cortex.embeddings.openai import OpenAIEmbedModel
                     self._model = OpenAIEmbedModel()
                     logger.info("Using OpenAI embeddings (paid tier)")
                 except (ImportError, ValueError) as e:
                     logger.warning(f"OpenAI not available, falling back to FastEmbed: {e}")
-                    from teleon.cortex.embeddings.fastembed import FastEmbedModel
-                    self._model = FastEmbedModel()
-            else:
+
+            if self._model is None:
                 from teleon.cortex.embeddings.fastembed import FastEmbedModel
                 self._model = FastEmbedModel()
-                logger.info("Using FastEmbed (free tier)")
+                logger.info("Using FastEmbed (local fallback)")
 
         return self._model
 

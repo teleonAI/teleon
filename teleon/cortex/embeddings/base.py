@@ -5,11 +5,15 @@ Abstract embedding model interface.
 from abc import ABC, abstractmethod
 from typing import List
 import logging
+import os
 
 logger = logging.getLogger("teleon.cortex.embeddings")
 
-# Standard embedding dimension (OpenAI text-embedding-3-small)
-EMBEDDING_DIMENSION = 1536
+# Default embedding dimension.
+# 768 for managed deployments (multilingual-e5-base via centralized service).
+# 1536 for OpenAI text-embedding-3-small.
+# Override with TELEON_EMBEDDING_DIMENSION env var if needed.
+EMBEDDING_DIMENSION = int(os.getenv("TELEON_EMBEDDING_DIMENSION", "768"))
 
 
 def normalize_embedding(embedding: List[float], target_dim: int = EMBEDDING_DIMENSION) -> List[float]:
