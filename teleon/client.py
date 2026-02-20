@@ -246,17 +246,25 @@ class TeleonClient:
             params = {}
             has_cortex_param = False
             for param_name, param in sig.parameters.items():
+                if param_name == "cortex":
+                    has_cortex_param = True
+
+                # Do not expose injected/internal parameters (e.g. cortex) as user inputs
+                if param_name in {"cortex"}:
+                    continue
+
                 params[param_name] = {
                     "type": str(param.annotation) if param.annotation != inspect.Parameter.empty else "string",
                     "required": param.default == inspect.Parameter.empty
                 }
-                if param_name == "cortex":
-                    has_cortex_param = True
 
             # Parse cortex configuration
             cortex_config = cortex
-            cortex_enabled = bool(cortex)
+            cortex_requested = bool(cortex)
+            cortex_enabled = cortex_requested
             memory_manager = None
+
+            cortex_strict = os.getenv("TELEON_CORTEX_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
 
             if cortex_enabled:
                 try:
@@ -275,9 +283,23 @@ class TeleonClient:
                         is_paid_tier=self.is_paid_tier
                     )
                 except ImportError as e:
+                    if cortex_strict and cortex_requested:
+                        raise ImportError(
+                            "Cortex is enabled for this agent but required dependencies are missing. "
+                            "If you're using Postgres memory, install asyncpg. "
+                            "Otherwise unset POSTGRES_URL/DATABASE_URL or disable cortex for this agent. "
+                            f"Original error: {e}"
+                        )
                     logging.getLogger("teleon.agent").warning(f"Cortex not available: {e}")
                     cortex_enabled = False
                 except Exception as e:
+                    if cortex_strict and cortex_requested:
+                        raise RuntimeError(
+                            "Cortex is enabled for this agent but failed to initialize. "
+                            "Check your Cortex backend configuration (POSTGRES_URL/DATABASE_URL/REDIS_URL) "
+                            "and required dependencies. "
+                            f"Original error: {e}"
+                        )
                     logging.getLogger("teleon.agent").error(f"Failed to initialize Cortex: {e}")
                     cortex_enabled = False
 
@@ -455,7 +477,14 @@ class TeleonClient:
                             layers=None
                         )
                     except Exception:
-                        pass
+                        if cortex_strict and cortex_requested:
+                            raise RuntimeError(
+                                "Cortex is enabled for this agent but could not create a Cortex memory instance. "
+                                "Fix the Cortex backend configuration/dependencies or disable cortex for this agent."
+                            )
+                        # Never allow a missing `cortex` kwarg to cause a TypeError
+                        # when the underlying function requires it.
+                        kwargs['cortex'] = None
 
                 # Initialize Sentinel
                 sentinel_engine = None

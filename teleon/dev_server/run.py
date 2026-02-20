@@ -8,6 +8,7 @@ Users can run this directly: python -m teleon.dev_server.run
 
 import os
 import sys
+import socket
 import uvicorn
 from pathlib import Path
 from teleon.dev_server import create_dev_server
@@ -16,9 +17,44 @@ from teleon.discovery import discover_agents
 
 def main():
     """Run the Teleon development server."""
+    # In dev server/playground, a misconfigured Cortex makes the playground misleading.
+    # Default to strict mode unless the user explicitly sets TELEON_CORTEX_STRICT.
+    os.environ.setdefault("TELEON_CORTEX_STRICT", "1")
+
     # Get host and port from environment variables
     host = os.environ.get("TELEON_HOST", "127.0.0.1")
-    port = int(os.environ.get("TELEON_PORT", "8000"))
+    requested_port = int(os.environ.get("TELEON_PORT", "8000"))
+
+    def _port_available(h: str, p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((h, p))
+                return True
+            except OSError:
+                return False
+
+    port = requested_port
+    if not _port_available(host, port):
+        found = None
+        for candidate in range(requested_port + 1, requested_port + 21):
+            if _port_available(host, candidate):
+                found = candidate
+                break
+
+        if found is None:
+            print(f"\n✗ Port {requested_port} is already in use on {host}.")
+            print("  Tried ports:")
+            print(f"    {requested_port + 1}-{requested_port + 20}")
+            print("  Quick fix:")
+            print("    • Stop the process using that port")
+            print("    • Or set TELEON_PORT to a free port")
+            return 1
+
+        port = found
+        os.environ["TELEON_PORT"] = str(port)
+        print(f"\n⚠️  Port {requested_port} is already in use on {host}.")
+        print(f"   Falling back to available port: {port}")
     
     print("\n" + "=" * 80)
     print("🚀 TELEON DEVELOPMENT SERVER")

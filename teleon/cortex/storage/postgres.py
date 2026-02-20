@@ -1,8 +1,6 @@
-"""
-PostgreSQL storage backend with pgvector support.
-"""
+"""PostgreSQL storage backend with pgvector support."""
 
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, TYPE_CHECKING
 from datetime import datetime, timezone
 import json
 import logging
@@ -20,6 +18,12 @@ try:
 except ImportError:
     ASYNCPG_AVAILABLE = False
     asyncpg = None
+
+if TYPE_CHECKING:
+    import asyncpg as _asyncpg_types
+    _PoolT = _asyncpg_types.Pool
+else:
+    _PoolT = Any
 
 
 class PostgresBackend(StorageBackend):
@@ -78,11 +82,11 @@ class PostgresBackend(StorageBackend):
         self._max_connections = max_connections
         self._connection_string = connection_string
 
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: Optional[_PoolT] = None
 
         logger.info(f"PostgresBackend initialized for {host}:{port}/{database}")
 
-    async def _get_pool(self) -> asyncpg.Pool:
+    async def _get_pool(self) -> _PoolT:
         """Get or create connection pool."""
         if self._pool is None:
             if self._connection_string:

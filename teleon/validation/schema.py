@@ -29,9 +29,11 @@ class SchemaGenerator:
         
         properties = {}
         required = []
+
+        excluded_params = {"self", "cortex"}
         
         for param_name, param in sig.parameters.items():
-            if param_name == 'self':
+            if param_name in excluded_params:
                 continue
             
             param_type = type_hints.get(param_name, Any)
@@ -99,10 +101,12 @@ class Validator:
         """
         sig = signature(func)
         type_hints = get_type_hints(func)
+
+        excluded_params = {"self", "cortex"}
         
         # Check for missing required parameters
         for param_name, param in sig.parameters.items():
-            if param_name == 'self':
+            if param_name in excluded_params:
                 continue
             
             if param.default == Parameter.empty and param_name not in kwargs:

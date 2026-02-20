@@ -99,7 +99,10 @@ Uses Cortex for persistent memory scoped per customer.
 """
 
 import os
+from dotenv import load_dotenv
 from teleon import TeleonClient
+
+load_dotenv()
 
 client = TeleonClient(
     api_key=os.getenv("TELEON_API_KEY", "tlk_test_dev"),
@@ -124,7 +127,7 @@ client = TeleonClient(
         },
     },
 )
-async def support_agent(query: str, customer_id: str, cortex) -> dict:
+async def support_agent(query: str, customer_id: str = "default", cortex=None) -> dict:
     """
     Handle customer support queries with memory.
 
@@ -136,18 +139,19 @@ async def support_agent(query: str, customer_id: str, cortex) -> dict:
     Returns:
         dict with response and metadata
     """
-    # Search for similar past issues and resolutions
-    past_resolutions = await cortex.search(
-        query=query,
-        filter={"type": "resolution"},
-        limit=3,
-    )
+    past_resolutions = []
+    recent_history = []
+    if cortex is not None:
+        past_resolutions = await cortex.search(
+            query=query,
+            filter={"type": "resolution"},
+            limit=3,
+        )
 
-    # Get recent conversation history
-    recent_history = await cortex.get(
-        filter={"type": "conversation"},
-        limit=5,
-    )
+        recent_history = await cortex.get(
+            filter={"type": "conversation"},
+            limit=5,
+        )
 
     response_parts = []
 
@@ -168,25 +172,29 @@ async def support_agent(query: str, customer_id: str, cortex) -> dict:
             "For refunds, our policy allows returns within 30 days of purchase. "
             "I can help process your refund request. Could you provide your order number?"
         )
-        await cortex.store(content=f"Customer inquired about refund: {query}", type="query", topic="refund")
+        if cortex is not None:
+            await cortex.store(content=f"Customer inquired about refund: {query}", type="query", topic="refund")
     elif any(word in query_lower for word in ["password", "login", "access", "account"]):
         response_parts.append(
             "For account access issues, you can reset your password at "
             "Settings > Security > Reset Password."
         )
-        await cortex.store(content=f"Customer had account issue: {query}", type="query", topic="account")
+        if cortex is not None:
+            await cortex.store(content=f"Customer had account issue: {query}", type="query", topic="account")
     else:
         response_parts.append(
             f"I\'d be happy to help you with that. Let me look into \'{query}\' for you."
         )
-        await cortex.store(content=f"General inquiry: {query}", type="query", topic="general")
+        if cortex is not None:
+            await cortex.store(content=f"General inquiry: {query}", type="query", topic="general")
 
     response = " ".join(response_parts)
 
     # Store conversation turn
-    await cortex.store(content=f"Q: {query}\\nA: {response}", type="conversation")
-
-    total_interactions = await cortex.count()
+    total_interactions = 0
+    if cortex is not None:
+        await cortex.store(content=f"Q: {query}\\nA: {response}", type="conversation")
+        total_interactions = await cortex.count()
 
     return {
         "response": response,
@@ -321,9 +329,13 @@ import os
 import json
 from typing import Dict, Any
 
+from dotenv import load_dotenv
+
 from teleon.client import TeleonClient
 from teleon.llm.gateway import LLMGateway
 from teleon.llm.types import LLMConfig, LLMMessage
+
+load_dotenv()
 
 client = TeleonClient(
     api_key=os.getenv("TELEON_API_KEY", "tlk_test_dev"),
@@ -429,9 +441,13 @@ Demonstrates LLM Gateway usage with configurable system prompts.
 import os
 from typing import Dict, Any
 
+from dotenv import load_dotenv
+
 from teleon.decorators.agent import agent
 from teleon.llm.gateway import LLMGateway
 from teleon.llm.types import LLMConfig, LLMMessage
+
+load_dotenv()
 
 gateway = LLMGateway()
 
@@ -470,7 +486,7 @@ async def content_generator(
 
     system_prompt = (
         f"You are an expert content writer. {tone_instruction} "
-        f"Generate a {content_type.replace(\'_\', \' \')} of roughly {max_words} words."
+        f"Generate a {content_type.replace('_', ' ')} of roughly {max_words} words."
     )
 
     messages = [
@@ -513,14 +529,14 @@ if __name__ == "__main__":
             tone="professional",
             max_words=300,
         )
-        print(f"Title: {result[\'title\']}")
-        print(f"Words: {result[\'word_count\']}")
-        print(f"\\n{result[\'content\'][:500]}...")
+        print(f"Title: {result['title']}")
+        print(f"Words: {result['word_count']}")
+        print(f"\n{result['content'][:500]}...")
 
     asyncio.run(main())
 '''
 
-    else:  # research-system
+    elif template_key == "research-system":
         return '''"""Multi-Agent Research System
 
 Coordinated multi-agent system with task delegation.
@@ -531,9 +547,13 @@ import os
 import asyncio
 from typing import Dict, Any, List
 
+from dotenv import load_dotenv
+
 from teleon import TeleonClient
 from teleon.llm.gateway import LLMGateway
 from teleon.llm.types import LLMConfig, LLMMessage
+
+load_dotenv()
 
 client = TeleonClient(
     api_key=os.getenv("TELEON_API_KEY", "tlk_test_dev"),
@@ -758,17 +778,7 @@ def _get_readme(project_name: str, template_key: str) -> str:
    cp .env.example .env
    ```
 
-3. Run your agent:
-   ```bash
-   python agents/main.py
-   ```
-
-4. Or use the Teleon CLI:
-   ```bash
-   teleon exec run agents/main.py
-   ```
-
-5. Start the development server:
+3. Start the development server:
    ```bash
    teleon dev start agents/
    ```
@@ -906,7 +916,7 @@ env/
         console.print(f"  1. cd {project_name}")
         console.print("  2. pip install -r requirements.txt")
         console.print("  3. cp .env.example .env  # fill in your keys")
-        console.print("  4. python agents/main.py")
+        console.print("  4. teleon dev start")
 
     except Exception as e:
         console.print(f"[red]Failed to create project: {e}[/red]")
