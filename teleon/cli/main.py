@@ -893,10 +893,10 @@ def init(
             (project_path / "tools").mkdir()
 
         # Write files
-        (project_path / "agents" / "main.py").write_text(_get_agent_content(template))
-        (project_path / "teleon.yaml").write_text(_get_yaml_content(project_name, template))
-        (project_path / ".env.example").write_text(_get_env_example(template))
-        (project_path / "README.md").write_text(_get_readme(project_name, template))
+        (project_path / "agents" / "main.py").write_text(_get_agent_content(template), encoding="utf-8")
+        (project_path / "teleon.yaml").write_text(_get_yaml_content(project_name, template), encoding="utf-8")
+        (project_path / ".env.example").write_text(_get_env_example(template), encoding="utf-8")
+        (project_path / "README.md").write_text(_get_readme(project_name, template), encoding="utf-8")
 
         # .gitignore
         gitignore_content = """# Python
@@ -922,10 +922,10 @@ env/
 *.swp
 *.swo
 """
-        (project_path / ".gitignore").write_text(gitignore_content)
+        (project_path / ".gitignore").write_text(gitignore_content, encoding="utf-8")
 
         # requirements.txt
-        (project_path / "requirements.txt").write_text(_get_requirements(template))
+        (project_path / "requirements.txt").write_text(_get_requirements(template), encoding="utf-8")
 
         console.print(f"\n[green]Project '{project_name}' created successfully![/green]")
         console.print("\n[bold]Next steps:[/bold]")

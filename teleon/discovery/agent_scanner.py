@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 
+def _build_params_from_signature(sig: inspect.Signature) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    for param_name, param in sig.parameters.items():
+        if param_name in {"self", "cortex"}:
+            continue
+        params[param_name] = {
+            "type": str(param.annotation) if param.annotation != inspect.Parameter.empty else "string",
+            "required": param.default == inspect.Parameter.empty,
+        }
+    return params
+
+
 def discover_agents(
     directory: Optional[Path] = None,
     exclude_files: Optional[List[str]] = None,
@@ -142,6 +154,51 @@ def discover_agents(
                         for agent_id, agent_info in obj.agents.items():
                             discovered_agents[agent_id] = agent_info
                             agent_info['source_file'] = py_file.name
+
+                # Also detect decorator-based agents created via @teleon.decorators.agent.agent
+                # These attach metadata directly to the wrapped function.
+                for _, obj in inspect.getmembers(module):
+                    if callable(obj) and getattr(obj, "_teleon_agent", False):
+                        file_has_agents = True
+
+                        config = getattr(obj, "_teleon_config", None)
+                        original = getattr(obj, "_teleon_original_func", None)
+
+                        sig_obj = None
+                        if config is not None and getattr(config, "signature", None) is not None:
+                            sig_obj = config.signature
+                        elif original is not None:
+                            sig_obj = inspect.signature(original)
+                        else:
+                            sig_obj = inspect.signature(obj)
+
+                        # Build a dev-server compatible agent info object.
+                        # Decorator-based agents don't have a TeleonClient/user_id, so we set a local placeholder.
+                        agent_name = getattr(config, "name", None) or getattr(obj, "__name__", "agent")
+
+                        import uuid
+                        from datetime import datetime, timezone
+
+                        agent_id = f"agent_{uuid.uuid4().hex[:16]}"
+                        agent_info = {
+                            "agent_id": agent_id,
+                            "name": agent_name,
+                            "description": (getattr(obj, "__doc__", None) or "No description provided"),
+                            "function": obj,
+                            "user_id": "local",
+                            "model": os.getenv("TELEON_LLM_MODEL", "gpt-4"),
+                            "temperature": 0.7,
+                            "max_tokens": 500,
+                            "parameters": _build_params_from_signature(sig_obj),
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "source_file": py_file.name,
+                            "helix": None,
+                            "cortex": None,
+                            "sentinel": None,
+                            "config": {},
+                        }
+
+                        discovered_agents[agent_id] = agent_info
                 
                 if file_has_agents:
                     scanned_files.append(py_file.name)
