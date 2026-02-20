@@ -154,7 +154,13 @@ class MemoryManager:
             if scope_field in full_kwargs:
                 scope_values[scope_field] = full_kwargs[scope_field]
             else:
-                logger.warning(f"Scope field '{scope_field}' not found in function arguments")
+                # If the caller didn't supply the scope field, use a default value if the
+                # function signature defines one (common in playground usage).
+                param = sig.parameters.get(scope_field)
+                if param is not None and param.default is not inspect.Parameter.empty:
+                    scope_values[scope_field] = param.default
+                else:
+                    logger.warning(f"Scope field '{scope_field}' not found in function arguments")
 
         return scope_values
 

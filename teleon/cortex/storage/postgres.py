@@ -22,8 +22,10 @@ except ImportError:
 if TYPE_CHECKING:
     import asyncpg as _asyncpg_types
     _PoolT = _asyncpg_types.Pool
+    _RecordT = _asyncpg_types.Record
 else:
     _PoolT = Any
+    _RecordT = Any
 
 
 class PostgresBackend(StorageBackend):
@@ -482,7 +484,7 @@ class PostgresBackend(StorageBackend):
             self._pool = None
             logger.info("PostgreSQL connection pool closed")
 
-    def _row_to_entry(self, row: asyncpg.Record) -> Entry:
+    def _row_to_entry(self, row: _RecordT) -> Entry:
         """Convert database row to Entry."""
         fields = row['fields']
         if isinstance(fields, str):

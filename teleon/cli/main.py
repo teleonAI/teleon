@@ -667,6 +667,22 @@ if __name__ == "__main__":
 '''
 
 
+def _get_requirements(template_key: str) -> str:
+    base = [
+        "teleon>=0.1.0",
+        "python-dotenv>=1.0.0",
+    ]
+
+    cortex_templates = {"customer-support", "research-system"}
+    if template_key in cortex_templates:
+        base.extend([
+            "asyncpg>=0.29.0",
+            "fastembed>=0.3.0",
+        ])
+
+    return "\n".join(base) + "\n"
+
+
 def _get_yaml_content(project_name: str, template_key: str) -> str:
     """Return teleon.yaml content tailored to the chosen template."""
     base = f"""# Teleon Configuration
@@ -909,7 +925,7 @@ env/
         (project_path / ".gitignore").write_text(gitignore_content)
 
         # requirements.txt
-        (project_path / "requirements.txt").write_text("teleon>=0.1.0\npython-dotenv>=1.0.0\n")
+        (project_path / "requirements.txt").write_text(_get_requirements(template))
 
         console.print(f"\n[green]Project '{project_name}' created successfully![/green]")
         console.print("\n[bold]Next steps:[/bold]")
