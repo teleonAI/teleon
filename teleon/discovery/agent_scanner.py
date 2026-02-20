@@ -52,6 +52,9 @@ def discover_agents(
     api_key_usage = {}  # Track {api_key: [files]}
     scanned_files = []
     failed_files = []
+    scan_errors = []
+
+    strict = os.environ.get("TELEON_CORTEX_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
     
     # Suppress TeleonClient verbose output during discovery
     old_teleon_quiet = os.environ.get('TELEON_QUIET')
@@ -172,6 +175,8 @@ def discover_agents(
                     tb_lines = traceback.format_exc().split('\n')
                     if len(tb_lines) > 3:
                         print(f"      {tb_lines[-2]}")  # Show the actual error line
+                if strict:
+                    scan_errors.append((py_file.name, f"{type(e).__name__}: {str(e)}"))
                 continue
         
         # Print clean summary
@@ -196,6 +201,15 @@ def discover_agents(
             print(f"   • Files scanned: {len(scanned_files)}")
             print(f"   • Agents found: {len(discovered_agents)}")
             print(f"   • API keys used: {len(api_key_usage)}")
+        elif strict and scan_errors:
+            print("❌ AGENT DISCOVERY FAILED")
+            print("=" * 80)
+            for filename, error in scan_errors:
+                first_line = error.split("\n")[0]
+                print(f"\n📄 {filename}:")
+                print(f"   {first_line}")
+            print("\n" + "=" * 80)
+            raise RuntimeError("Agent discovery failed due to errors above.")
             
             # Show API key usage details
             if len(api_key_usage) > 1:

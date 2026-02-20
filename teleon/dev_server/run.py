@@ -63,13 +63,17 @@ def main():
     
     # Auto-discover agents (with clean output)
     try:
-        agents = discover_agents()
+        strict = os.environ.get("TELEON_CORTEX_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+        agents = discover_agents(verbose=strict)
     except ValueError as e:
         # API key validation failed - error already shown by discover_agents()
         print("\n💡 Quick fix:")
         print("   • For local development: use environment='dev'")
         print("   • For production: get API key from https://dashboard.teleon.ai")
         print()
+        return 1
+    except RuntimeError as e:
+        print(f"\n✗ Error: {e}")
         return 1
     
     if not agents:
