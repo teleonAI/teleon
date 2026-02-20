@@ -368,6 +368,27 @@ class LLMGateway:
 _global_gateway: Optional[LLMGateway] = None
 
 
+def _configure_gateway_from_env(gateway: LLMGateway) -> None:
+    openai_key = os.getenv("OPENAI_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+    if openai_key and "openai" not in gateway.providers:
+        from teleon.llm.providers.openai import OpenAIProvider
+        provider_config = ProviderConfig(
+            name="openai",
+            api_key=openai_key,
+        )
+        gateway.register_provider(OpenAIProvider(provider_config))
+
+    if anthropic_key and "anthropic" not in gateway.providers:
+        from teleon.llm.providers.anthropic import AnthropicProvider
+        provider_config = ProviderConfig(
+            name="anthropic",
+            api_key=anthropic_key,
+        )
+        gateway.register_provider(AnthropicProvider(provider_config))
+
+
 def get_gateway() -> LLMGateway:
     """
     Get the global LLM Gateway instance.
@@ -378,6 +399,7 @@ def get_gateway() -> LLMGateway:
     global _global_gateway
     if _global_gateway is None:
         _global_gateway = LLMGateway()
+    _configure_gateway_from_env(_global_gateway)
     return _global_gateway
 
 
