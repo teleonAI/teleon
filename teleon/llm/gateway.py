@@ -68,6 +68,30 @@ class LLMGateway:
         # Metrics reporting
         self._enable_metrics = enable_metrics_reporting and AGENT_REPORTER_AVAILABLE
         self._metrics_enabled_env = os.getenv("TELEON_METRICS_ENABLED", "true").lower() == "true"
+
+        self._auto_register_providers_from_env()
+
+    def _auto_register_providers_from_env(self) -> None:
+        openai_key = os.getenv("OPENAI_API_KEY")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+        if openai_key and "openai" not in self.providers:
+            from teleon.llm.providers.openai import OpenAIProvider
+
+            provider_config = ProviderConfig(
+                name="openai",
+                api_key=openai_key,
+            )
+            self.register_provider(OpenAIProvider(provider_config))
+
+        if anthropic_key and "anthropic" not in self.providers:
+            from teleon.llm.providers.anthropic import AnthropicProvider
+
+            provider_config = ProviderConfig(
+                name="anthropic",
+                api_key=anthropic_key,
+            )
+            self.register_provider(AnthropicProvider(provider_config))
     
     def _calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """
