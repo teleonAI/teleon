@@ -531,7 +531,7 @@ if __name__ == "__main__":
         )
         print(f"Title: {result['title']}")
         print(f"Words: {result['word_count']}")
-        print(f"\n{result['content'][:500]}...")
+        print(f"\\n{result['content'][:500]}...")
 
     asyncio.run(main())
 '''
