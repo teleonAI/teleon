@@ -149,21 +149,19 @@ class SentinelViolationPersistence:
                 self._circuit_open = False
                 self._circuit_failure_count = 0
         
-        # Prepare violation payload
-        # Note: action_type must match AuditActionType enum values (AGENT_REQUEST, AGENT_RESPONSE)
+        # Prepare violation payload for the dedicated sentinel ingest endpoint
         violation_payload = {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
-            "action_type": "agent_request" if validation_type == "input" else "agent_response",
-            "action": f"Sentinel violation: {violation_type}",
-            "status": "warning",  # Valid AuditLogStatus enum value
-            "extra_metadata": {
-                "violation_type": violation_type,
-                "action_taken": action_taken,
-                "violation_details": details,
-                "source": "sentinel",
-                "validation_type": validation_type
-            }
+            "violation_type": violation_type,
+            "action_taken": action_taken,
+            "severity": details.get("severity", "medium"),
+            "validation_type": validation_type,
+            "message": details.get("message", f"Sentinel violation: {violation_type}"),
+            "details": details,
+            "confidence_score": details.get("score"),
+            "policy_name": details.get("policy_name"),
+            "tool_name": details.get("tool_name"),
         }
         
         # Add to pending queue (non-blocking)
@@ -283,10 +281,8 @@ class SentinelViolationPersistence:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient() as client:
-                    # Submit violations as AuditLog entries via agent batch endpoint
-                    # This endpoint expects a list directly, not wrapped in a dict
-                    # Endpoint signature: logs: List[Dict[str, Any]] = Body(...)
-                    endpoint = f"{self.api_url}/api/v1/governance/audit-logs/batch/agent"
+                    # Submit violations to dedicated sentinel ingest endpoint
+                    endpoint = f"{self.api_url}/api/v1/sentinel/violations/ingest"
                     headers = {
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
@@ -294,9 +290,9 @@ class SentinelViolationPersistence:
                     
                     response = await client.post(
                         endpoint,
-                        json=violations_to_send,  # Send list directly, not wrapped
+                        json={"violations": violations_to_send},
                         headers=headers,
-                        timeout=5.0,  # Reduced from 30s to 5s
+                        timeout=5.0,
                     )
                     response.raise_for_status()
                     

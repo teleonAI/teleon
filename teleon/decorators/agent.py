@@ -257,7 +257,21 @@ def agent(
                         logger.warning(f"Sentinel initialization failed: {e}")
                     except ImportError:
                         pass
-            
+
+            # Wrap tools with Sentinel guardrails if enabled
+            if sentinel_engine and sentinel_engine.get_tool_guardrail():
+                try:
+                    tool_guard = sentinel_engine.get_tool_guardrail()
+                    if config.tools:
+                        config.tools = tool_guard.guard_tools(config.tools)
+                except Exception as e:
+                    try:
+                        from teleon.core import StructuredLogger, LogLevel
+                        logger = StructuredLogger("agent.decorator", LogLevel.WARNING)
+                        logger.warning(f"Tool guardrail wrapping failed: {e}")
+                    except ImportError:
+                        pass
+
             # SENTINEL: Validate input BEFORE execution
             if sentinel_engine:
                 try:

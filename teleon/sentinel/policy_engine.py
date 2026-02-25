@@ -1,7 +1,12 @@
 """
 Policy Engine - Custom Policy Evaluation.
 
-Evaluates custom policies defined by users.
+Retained for backward compatibility. New code should use the Policy DSL
+(teleon.sentinel.policy_dsl) which provides safe YAML-based evaluation
+without eval().
+
+The 'condition' policy type now delegates to SafeEvaluator operators
+instead of using eval().
 """
 
 import re
@@ -11,123 +16,52 @@ from teleon.core import StructuredLogger, LogLevel
 
 class PolicyEngine:
     """
-    Custom policy evaluation engine.
-    
+    Custom policy evaluation engine (backward-compatible).
+
     Supports:
     - Regex pattern matching
-    - Condition evaluation
-    - Custom function evaluation
+    - Condition evaluation (now via safe operator dispatch, no eval)
+    - Custom function evaluation (with timeout)
     """
-    
+
     def __init__(self, policies: Optional[Dict[str, Dict[str, Any]]] = None):
-        """
-        Initialize policy engine.
-        
-        Args:
-            policies: Dictionary of policy definitions
-        """
         self.policies: Dict[str, Dict[str, Any]] = policies or {}
         self.logger = StructuredLogger("policy_engine", LogLevel.INFO)
-    
+
     def add_policy(self, name: str, policy_def: Dict[str, Any]) -> None:
-        """
-        Add a custom policy.
-        
-        Args:
-            name: Policy name
-            policy_def: Policy definition with:
-                - type: 'regex', 'condition', or 'function'
-                - pattern: Regex pattern or condition expression
-                - action: Action to take on match
-                - message: Violation message
-        """
+        """Add a custom policy."""
         self.policies[name] = policy_def
         self.logger.debug("Policy added", policy_name=name)
-    
+
     def evaluate_policy(self, policy_name: str, data: Any) -> List[Dict[str, Any]]:
-        """
-        Evaluate a specific policy.
-        
-        Args:
-            policy_name: Name of policy to evaluate
-            data: Data to evaluate
-        
-        Returns:
-            List of violations
-        """
+        """Evaluate a specific policy."""
         if policy_name not in self.policies:
             self.logger.warning("Policy not found", policy_name=policy_name)
             return []
-        
+
         policy = self.policies[policy_name]
         violations = []
-        
-        # Extract text from data
         text = self._extract_text(data)
-        
-        policy_type = policy.get('type', 'regex')
-        
-        if policy_type == 'regex':
-            pattern = policy.get('pattern')
+        policy_type = policy.get("type", "regex")
+
+        if policy_type == "regex":
+            pattern = policy.get("pattern")
             if pattern:
                 if re.search(pattern, text, re.IGNORECASE):
                     violations.append({
-                        'type': 'custom_policy',
-                        'policy_name': policy_name,
-                        'message': policy.get('message', f'Policy {policy_name} violation'),
-                        'severity': policy.get('severity', 'medium')
+                        "type": "custom_policy",
+                        "policy_name": policy_name,
+                        "message": policy.get("message", f"Policy {policy_name} violation"),
+                        "severity": policy.get("severity", "medium"),
                     })
-        
-        elif policy_type == 'condition':
-            condition = policy.get('condition')
-            if condition:
-                # Validate condition is safe before evaluation
-                if not self._is_safe_condition(condition):
-                    self.logger.warning(
-                        "Unsafe policy condition rejected",
-                        policy_name=policy_name,
-                        condition=condition[:100]  # Truncate for logging
-                    )
-                else:
-                    try:
-                        # Safe evaluation context with restricted builtins
-                        safe_dict = {
-                            'text': text,
-                            'data': data,
-                            'len': len,
-                            'str': str,
-                            'bool': bool,
-                            'int': int,
-                            'float': float,
-                            'abs': abs,
-                            'min': min,
-                            'max': max,
-                            'sum': sum,
-                            'any': any,
-                            'all': all,
-                            'isinstance': isinstance,
-                            'True': True,
-                            'False': False,
-                            'None': None,
-                        }
-                        result = eval(condition, {"__builtins__": {}}, safe_dict)
-                        if result:
-                            violations.append({
-                                'type': 'custom_policy',
-                                'policy_name': policy_name,
-                                'message': policy.get('message', f'Policy {policy_name} violation'),
-                                'severity': policy.get('severity', 'medium')
-                            })
-                    except Exception as e:
-                        self.logger.warning(
-                            "Policy condition evaluation failed",
-                            policy_name=policy_name,
-                            error=str(e)
-                        )
-        
-        elif policy_type == 'function':
-            func = policy.get('function')
-            timeout = policy.get('timeout', 5.0)  # Default 5 second timeout
+
+        elif policy_type == "condition":
+            # Safe evaluation via operator dispatch (replaces eval())
+            violations.extend(self._evaluate_condition_safely(policy_name, policy, text, data))
+
+        elif policy_type == "function":
+            func = policy.get("function")
+            timeout = policy.get("timeout", 5.0)
             if func and callable(func):
                 try:
                     import concurrent.futures
@@ -136,45 +70,104 @@ class PolicyEngine:
                         result = future.result(timeout=timeout)
                     if result:
                         violations.append({
-                            'type': 'custom_policy',
-                            'policy_name': policy_name,
-                            'message': policy.get('message', f'Policy {policy_name} violation'),
-                            'severity': policy.get('severity', 'medium'),
-                            'function_result': result
+                            "type": "custom_policy",
+                            "policy_name": policy_name,
+                            "message": policy.get("message", f"Policy {policy_name} violation"),
+                            "severity": policy.get("severity", "medium"),
+                            "function_result": result,
                         })
-                except concurrent.futures.TimeoutError:
-                    self.logger.warning(
-                        "Policy function timed out",
-                        policy_name=policy_name,
-                        timeout=timeout
-                    )
                 except Exception as e:
                     self.logger.warning(
                         "Policy function evaluation failed",
                         policy_name=policy_name,
-                        error=str(e)
+                        error=str(e),
                     )
-        
+
         return violations
-    
+
+    def _evaluate_condition_safely(
+        self, policy_name: str, policy: Dict[str, Any], text: str, data: Any
+    ) -> List[Dict[str, Any]]:
+        """Evaluate a condition policy using safe operators instead of eval()."""
+        condition = policy.get("condition", "")
+        if not condition:
+            return []
+
+        try:
+            from teleon.sentinel.policy_dsl.evaluator import SafeEvaluator
+            from teleon.sentinel.policy_dsl.models import (
+                EvaluationContext,
+                PolicyDefinition,
+                PolicyRule,
+                RuleType,
+            )
+
+            # Try to map legacy condition strings to DSL rules.
+            # Common patterns: "len(text) > N", "'word' in text"
+            ctx = EvaluationContext(
+                text=text,
+                data=data if isinstance(data, dict) else {"raw": data},
+            )
+
+            # Simple heuristic mapping for common legacy conditions
+            evaluator = SafeEvaluator()
+
+            # len(text) > N
+            len_match = re.match(r"len\(text\)\s*(>|>=|<|<=|==|!=)\s*(\d+)", condition)
+            if len_match:
+                op_map = {">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "==": "eq", "!=": "neq"}
+                rule = PolicyRule(
+                    type=RuleType.LENGTH,
+                    operator=op_map.get(len_match.group(1), "gt"),
+                    value=int(len_match.group(2)),
+                )
+                policy_def = PolicyDefinition(
+                    name=policy_name,
+                    description=policy.get("message"),
+                    severity=policy.get("severity", "medium"),
+                    rules=[rule],
+                )
+                return evaluator.evaluate_policy(policy_def, ctx)
+
+            # 'word' in text
+            in_match = re.match(r"['\"](.+?)['\"]\s+in\s+text", condition)
+            if in_match:
+                rule = PolicyRule(
+                    type=RuleType.TEXT_MATCH,
+                    operator="contains",
+                    value=in_match.group(1),
+                )
+                policy_def = PolicyDefinition(
+                    name=policy_name,
+                    description=policy.get("message"),
+                    severity=policy.get("severity", "medium"),
+                    rules=[rule],
+                )
+                return evaluator.evaluate_policy(policy_def, ctx)
+
+            self.logger.warning(
+                "Could not parse legacy condition, skipping",
+                policy_name=policy_name,
+                condition=condition[:100],
+            )
+            return []
+
+        except Exception as e:
+            self.logger.warning(
+                "Condition evaluation failed",
+                policy_name=policy_name,
+                error=str(e),
+            )
+            return []
+
     def evaluate_all(self, data: Any) -> List[Dict[str, Any]]:
-        """
-        Evaluate all policies.
-        
-        Args:
-            data: Data to evaluate
-        
-        Returns:
-            List of all violations
-        """
+        """Evaluate all policies."""
         all_violations = []
-        
         for policy_name in self.policies:
             violations = self.evaluate_policy(policy_name, data)
             all_violations.extend(violations)
-        
         return all_violations
-    
+
     def _extract_text(self, data: Any) -> str:
         """Extract text from various data types."""
         if isinstance(data, str):
@@ -183,71 +176,9 @@ class PolicyEngine:
             texts = []
             for value in data.values():
                 texts.append(self._extract_text(value))
-            return ' '.join(texts)
+            return " ".join(texts)
         elif isinstance(data, list):
             texts = [self._extract_text(item) for item in data]
-            return ' '.join(texts)
+            return " ".join(texts)
         else:
             return str(data)
-
-    def _is_safe_condition(self, condition: str) -> bool:
-        """
-        Validate that a condition string is safe for evaluation.
-
-        Blocks dangerous patterns that could be used for code injection.
-
-        Args:
-            condition: The condition string to validate
-
-        Returns:
-            True if the condition is safe, False otherwise
-        """
-        if not condition or not isinstance(condition, str):
-            return False
-
-        # Maximum condition length to prevent DoS
-        if len(condition) > 1000:
-            return False
-
-        # Dangerous patterns that should never appear in conditions
-        dangerous_patterns = [
-            '__',           # Dunder methods/attributes
-            'import',       # Import statements
-            'exec',         # Code execution
-            'eval',         # Nested eval
-            'compile',      # Code compilation
-            'open',         # File operations
-            'file',         # File operations
-            'input',        # User input
-            'getattr',      # Attribute access
-            'setattr',      # Attribute modification
-            'delattr',      # Attribute deletion
-            'globals',      # Global scope access
-            'locals',       # Local scope access
-            'vars',         # Variable access
-            'dir',          # Directory listing
-            'type',         # Type introspection
-            'class',        # Class definition
-            'lambda',       # Lambda functions
-            'def ',         # Function definition
-            'os.',          # OS module
-            'sys.',         # Sys module
-            'subprocess',   # Subprocess execution
-            'socket',       # Network operations
-            'requests',     # HTTP requests
-            'urllib',       # URL operations
-            'pickle',       # Serialization
-            'marshal',      # Serialization
-            'shelve',       # Persistence
-            'codecs',       # Codec operations
-            'builtins',     # Builtins access
-            'breakpoint',   # Debugging
-        ]
-
-        condition_lower = condition.lower()
-        for pattern in dangerous_patterns:
-            if pattern in condition_lower:
-                return False
-
-        return True
-
