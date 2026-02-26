@@ -16,11 +16,18 @@ class HTTPRequestTool(BaseTool):
         method = kwargs.get("method", "GET").upper()
         headers = kwargs.get("headers", {})
         data = kwargs.get("data")
+        timeout = kwargs.get("timeout", 15)
+        verify = kwargs.get("verify", True)
+        follow_redirects = kwargs.get("follow_redirects", True)
         
         try:
             import httpx
             
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                verify=verify,
+                follow_redirects=follow_redirects,
+            ) as client:
                 response = await client.request(
                     method=method,
                     url=url,
@@ -41,7 +48,18 @@ class HTTPRequestTool(BaseTool):
                 )
         
         except Exception as e:
-            return ToolResult(success=False, error=str(e), tool_name=self.name)
+            error = str(e) or repr(e)
+            return ToolResult(
+                success=False,
+                error=error,
+                tool_name=self.name,
+                metadata={
+                    "exception_type": type(e).__name__,
+                    "exception_repr": repr(e),
+                    "url": url,
+                    "method": method,
+                },
+            )
     
     def get_schema(self) -> ToolSchema:
         return ToolSchema(
@@ -70,12 +88,19 @@ class WebScraperTool(BaseTool):
         """Execute web scraping."""
         url = kwargs.get("url")
         extract_type = kwargs.get("type", "text")  # text, links, title
+        timeout = kwargs.get("timeout", 20)
+        verify = kwargs.get("verify", True)
+        follow_redirects = kwargs.get("follow_redirects", True)
         
         try:
             import httpx
             from bs4 import BeautifulSoup
             
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                verify=verify,
+                follow_redirects=follow_redirects,
+            ) as client:
                 response = await client.get(url)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
@@ -91,7 +116,18 @@ class WebScraperTool(BaseTool):
                 return ToolResult(success=True, data=data, tool_name=self.name)
         
         except Exception as e:
-            return ToolResult(success=False, error=str(e), tool_name=self.name)
+            error = str(e) or repr(e)
+            return ToolResult(
+                success=False,
+                error=error,
+                tool_name=self.name,
+                metadata={
+                    "exception_type": type(e).__name__,
+                    "exception_repr": repr(e),
+                    "url": url,
+                    "extract_type": extract_type,
+                },
+            )
     
     def get_schema(self) -> ToolSchema:
         return ToolSchema(
@@ -138,7 +174,17 @@ class URLValidatorTool(BaseTool):
             )
         
         except Exception as e:
-            return ToolResult(success=False, error=str(e), tool_name=self.name)
+            error = str(e) or repr(e)
+            return ToolResult(
+                success=False,
+                error=error,
+                tool_name=self.name,
+                metadata={
+                    "exception_type": type(e).__name__,
+                    "exception_repr": repr(e),
+                    "url": url,
+                },
+            )
     
     def get_schema(self) -> ToolSchema:
         return ToolSchema(
@@ -166,6 +212,9 @@ class APIClientTool(BaseTool):
         method = kwargs.get("method", "GET")
         api_key = kwargs.get("api_key")
         auth_header = kwargs.get("auth_header", "Authorization")
+        timeout = kwargs.get("timeout", 15)
+        verify = kwargs.get("verify", True)
+        follow_redirects = kwargs.get("follow_redirects", True)
         
         try:
             import httpx
@@ -174,7 +223,11 @@ class APIClientTool(BaseTool):
             if api_key:
                 headers[auth_header] = f"Bearer {api_key}"
             
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                verify=verify,
+                follow_redirects=follow_redirects,
+            ) as client:
                 response = await client.request(method=method, url=url, headers=headers)
                 
                 return ToolResult(
@@ -184,7 +237,18 @@ class APIClientTool(BaseTool):
                 )
         
         except Exception as e:
-            return ToolResult(success=False, error=str(e), tool_name=self.name)
+            error = str(e) or repr(e)
+            return ToolResult(
+                success=False,
+                error=error,
+                tool_name=self.name,
+                metadata={
+                    "exception_type": type(e).__name__,
+                    "exception_repr": repr(e),
+                    "url": url,
+                    "method": method,
+                },
+            )
     
     def get_schema(self) -> ToolSchema:
         return ToolSchema(
@@ -213,11 +277,18 @@ class WebhookTool(BaseTool):
         """Execute webhook POST."""
         url = kwargs.get("url")
         data = kwargs.get("data")
+        timeout = kwargs.get("timeout", 15)
+        verify = kwargs.get("verify", True)
+        follow_redirects = kwargs.get("follow_redirects", True)
         
         try:
             import httpx
             
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                verify=verify,
+                follow_redirects=follow_redirects,
+            ) as client:
                 response = await client.post(url, json=data)
                 
                 return ToolResult(

@@ -2128,14 +2128,25 @@ text-decoration:none;transition:all .2s ease}}
                 
                 async function sendMessage() {{
                     const agentId = document.getElementById('agentSelect').value;
-                    const input = document.getElementById('inputText').value.trim();
+                    const rawInput = document.getElementById('inputText').value.trim();
                     const temperature = parseFloat(document.getElementById('temperature').value);
                     const maxTokens = parseInt(document.getElementById('maxTokens').value);
                     
-                    if (!agentId || !input) return;
+                    if (!agentId || !rawInput) return;
+
+                    // If the user typed a JSON object/array, send it as structured input.
+                    // Otherwise, send the raw string.
+                    let input = rawInput;
+                    if (rawInput.startsWith('{') || rawInput.startsWith('[')) {{
+                        try {{
+                            input = JSON.parse(rawInput);
+                        }} catch (e) {{
+                            input = rawInput;
+                        }}
+                    }}
                     
                     // Add user message to chat
-                    addMessage('user', input);
+                    addMessage('user', rawInput);
                     document.getElementById('inputText').value = '';
                     document.getElementById('sendBtn').disabled = true;
                     document.getElementById('sendBtn').textContent = 'Sending...';
