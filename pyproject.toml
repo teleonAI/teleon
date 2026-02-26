@@ -85,6 +85,7 @@ httpx = ">=0.25,<0.26"
 tenacity = ">=8.2,<9.0"
 structlog = ">=23.2,<24.0"
 beautifulsoup4 = ">=4.12,<5.0"
+certifi = ">=2024.2.2"
 
 # Observability
 prometheus-client = ">=0.19,<1.0"

@@ -1,6 +1,7 @@
 """Web and API tools."""
 
 import re
+import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,6 +20,14 @@ class HTTPRequestTool(BaseTool):
         timeout = kwargs.get("timeout", 15)
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
+
+        if verify is True:
+            verify = (
+                os.getenv("TELEON_CA_BUNDLE")
+                or os.getenv("SSL_CERT_FILE")
+                or os.getenv("REQUESTS_CA_BUNDLE")
+                or True
+            )
         
         try:
             import httpx
@@ -91,6 +100,14 @@ class WebScraperTool(BaseTool):
         timeout = kwargs.get("timeout", 20)
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
+
+        if verify is True:
+            verify = (
+                os.getenv("TELEON_CA_BUNDLE")
+                or os.getenv("SSL_CERT_FILE")
+                or os.getenv("REQUESTS_CA_BUNDLE")
+                or True
+            )
         
         try:
             import httpx
@@ -215,6 +232,14 @@ class APIClientTool(BaseTool):
         timeout = kwargs.get("timeout", 15)
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
+
+        if verify is True:
+            verify = (
+                os.getenv("TELEON_CA_BUNDLE")
+                or os.getenv("SSL_CERT_FILE")
+                or os.getenv("REQUESTS_CA_BUNDLE")
+                or True
+            )
         
         try:
             import httpx
@@ -280,6 +305,14 @@ class WebhookTool(BaseTool):
         timeout = kwargs.get("timeout", 15)
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
+
+        if verify is True:
+            verify = (
+                os.getenv("TELEON_CA_BUNDLE")
+                or os.getenv("SSL_CERT_FILE")
+                or os.getenv("REQUESTS_CA_BUNDLE")
+                or True
+            )
         
         try:
             import httpx
@@ -301,7 +334,17 @@ class WebhookTool(BaseTool):
                 )
         
         except Exception as e:
-            return ToolResult(success=False, error=str(e), tool_name=self.name)
+            error = str(e) or repr(e)
+            return ToolResult(
+                success=False,
+                error=error,
+                tool_name=self.name,
+                metadata={
+                    "exception_type": type(e).__name__,
+                    "exception_repr": repr(e),
+                    "url": url,
+                },
+            )
     
     def get_schema(self) -> ToolSchema:
         return ToolSchema(
