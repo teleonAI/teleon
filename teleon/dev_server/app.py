@@ -2166,6 +2166,28 @@ text-decoration:none;transition:all .2s ease}}
                     }}
                 }}
                 
+                function escapeHtml(text) {{
+                    return String(text)
+                        .replaceAll('&', '&amp;')
+                        .replaceAll('<', '&lt;')
+                        .replaceAll('>', '&gt;')
+                        .replaceAll('"', '&quot;')
+                        .replaceAll("'", '&#039;');
+                }}
+
+                function formatContent(content) {{
+                    // Render objects/arrays as pretty JSON so we don't get '[object Object]'
+                    if (content !== null && typeof content === 'object') {{
+                        try {{
+                            const pretty = JSON.stringify(content, null, 2);
+                            return `<pre style="white-space: pre-wrap; margin: 0;">${escapeHtml(pretty)}</pre>`;
+                        }} catch (e) {{
+                            return `<pre style="white-space: pre-wrap; margin: 0;">${escapeHtml(String(content))}</pre>`;
+                        }}
+                    }}
+                    return escapeHtml(content);
+                }}
+
                 function addMessage(type, content, meta = {{}}) {{
                     const container = document.getElementById('chatContainer');
                     if (container.querySelector('.empty')) {{
@@ -2186,7 +2208,7 @@ text-decoration:none;transition:all .2s ease}}
                     
                     messageDiv.innerHTML = `
                         <div class="message-header">${{header}} • ${{new Date().toLocaleTimeString()}}</div>
-                        <div class="message-content">${{content}}</div>
+                        <div class="message-content">${{formatContent(content)}}</div>
                         ${{metaHtml}}
                     `;
                     
