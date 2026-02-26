@@ -76,6 +76,10 @@ def discover_agents(
         # Find all Python files
         python_files = list(directory.glob("**/*.py"))
 
+        venv_markers = {".venv", "venv", "env", "teleon_test_env"}
+        sys_prefix = Path(sys.prefix).resolve()
+        sys_prefix_str = str(sys_prefix).lower()
+
         # Filter out excluded files
         python_files = [
             f for f in python_files
@@ -85,6 +89,31 @@ def discover_agents(
                 any(exclude in str(f) for exclude in exclude_files)
             )
         ]
+
+        # Skip scanning virtualenv and site-packages files.
+        # Discovery uses spec_from_file_location which breaks many package-relative imports.
+        filtered_files = []
+        for f in python_files:
+            try:
+                resolved = f.resolve()
+            except Exception:
+                resolved = f
+
+            parts_lower = {p.lower() for p in resolved.parts}
+            if parts_lower & venv_markers:
+                continue
+
+            resolved_str = str(resolved).lower()
+            if "site-packages" in resolved_str or "dist-packages" in resolved_str:
+                continue
+
+            # Also skip anything under the interpreter prefix (extra safety), unless it's inside the target directory.
+            if resolved_str.startswith(sys_prefix_str) and "site-packages" in resolved_str:
+                continue
+
+            filtered_files.append(f)
+
+        python_files = filtered_files
 
         print(f"📂 Scanning {len(python_files)} Python files...")
         
@@ -130,6 +159,7 @@ def discover_agents(
 
                 # Look for TeleonClient instances and their agents
                 file_has_agents = False
+                client_agent_functions: Set[Any] = set()
                 for name, obj in inspect.getmembers(module):
                     if (hasattr(obj, '__class__') and
                         obj.__class__.__name__ == 'TeleonClient' and
@@ -154,11 +184,18 @@ def discover_agents(
                         for agent_id, agent_info in obj.agents.items():
                             discovered_agents[agent_id] = agent_info
                             agent_info['source_file'] = py_file.name
+                            fn = agent_info.get("function")
+                            if fn is not None:
+                                client_agent_functions.add(fn)
 
                 # Also detect decorator-based agents created via @teleon.decorators.agent.agent
                 # These attach metadata directly to the wrapped function.
                 for _, obj in inspect.getmembers(module):
                     if callable(obj) and getattr(obj, "_teleon_agent", False):
+                        # Avoid double-counting: @client.agent also attaches `_teleon_agent` metadata
+                        # to the wrapper, but those agents are already discovered via `TeleonClient.agents`.
+                        if obj in client_agent_functions:
+                            continue
                         file_has_agents = True
 
                         config = getattr(obj, "_teleon_config", None)
