@@ -12,6 +12,16 @@ from teleon.llm.types import (
 from teleon.llm.providers.base import LLMProvider
 from teleon.llm.cache import ResponseCache
 
+from teleon.core.exceptions import QuotaExceededError
+
+try:
+    from teleon.helix.llm_metrics import TokenCounter
+    from teleon.helix.cost_tracker import TokenPeriod, get_token_tracker
+
+    HELIX_TOKEN_BUDGET_AVAILABLE = True
+except Exception:
+    HELIX_TOKEN_BUDGET_AVAILABLE = False
+
 # Try to import agent reporter for metrics
 try:
     from teleon.helix.agent_reporter import get_agent_reporter
@@ -69,7 +79,63 @@ class LLMGateway:
         self._enable_metrics = enable_metrics_reporting and AGENT_REPORTER_AVAILABLE
         self._metrics_enabled_env = os.getenv("TELEON_METRICS_ENABLED", "true").lower() == "true"
 
+        self._token_counter = TokenCounter() if HELIX_TOKEN_BUDGET_AVAILABLE else None
+        self._token_budget_hourly = self._parse_int_env("TELEON_TOKEN_BUDGET_HOURLY")
+        self._token_budget_daily = self._parse_int_env("TELEON_TOKEN_BUDGET_DAILY")
+        self._token_budget_monthly = self._parse_int_env("TELEON_TOKEN_BUDGET_MONTHLY")
+
         self._auto_register_providers_from_env()
+
+    def _parse_int_env(self, name: str) -> Optional[int]:
+        value = os.getenv(name)
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except Exception as e:
+            raise ValueError(f"Invalid {name}: must be an integer") from e
+        if parsed <= 0:
+            raise ValueError(f"Invalid {name}: must be > 0")
+        return parsed
+
+    def _estimate_prompt_tokens(self, messages: List[LLMMessage], model: str) -> int:
+        if not self._token_counter:
+            return 0
+        message_dicts = [{"role": m.role, "content": m.content} for m in messages]
+        return self._token_counter.count_messages_tokens(message_dicts, model=model)
+
+    async def _enforce_token_budgets(self, messages: List[LLMMessage], model: str) -> None:
+        if not HELIX_TOKEN_BUDGET_AVAILABLE:
+            return
+
+        budget_map: Dict[TokenPeriod, Optional[int]] = {
+            TokenPeriod.HOURLY: self._token_budget_hourly,
+            TokenPeriod.DAILY: self._token_budget_daily,
+            TokenPeriod.MONTHLY: self._token_budget_monthly,
+        }
+        if not any(budget_map.values()):
+            return
+
+        estimated_prompt_tokens = self._estimate_prompt_tokens(messages, model)
+        token_tracker = get_token_tracker()
+
+        for period, limit in budget_map.items():
+            if not limit:
+                continue
+            if period == TokenPeriod.HOURLY:
+                current = await token_tracker.get_tokens_per_hour(agent_id=None)
+            else:
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+                if period == TokenPeriod.DAILY:
+                    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                breakdown = await token_tracker.get_breakdown(start_time=start, end_time=now)
+                current = breakdown.total_tokens
+
+            projected = current + estimated_prompt_tokens
+            if projected > limit:
+                raise QuotaExceededError(f"token_budget_{period.value}", projected, limit)
 
     def _auto_register_providers_from_env(self) -> None:
         openai_key = os.getenv("OPENAI_API_KEY")
@@ -206,6 +272,8 @@ class LLMGateway:
         
         if not selected_provider:
             raise ValueError(f"No provider available for model: {config.model}")
+
+        await self._enforce_token_budgets(messages, config.model)
         
         # Generate completion
         error_type = None
@@ -228,6 +296,20 @@ class LLMGateway:
                 error_type=error_type
             )
             raise
+
+        if HELIX_TOKEN_BUDGET_AVAILABLE:
+            try:
+                token_tracker = get_token_tracker()
+                await token_tracker.record_tokens(
+                    agent_id="llm_gateway",
+                    model=response.model,
+                    input_tokens=response.usage.prompt_tokens if response.usage else 0,
+                    output_tokens=response.usage.completion_tokens if response.usage else 0,
+                    operation="completion",
+                    metadata={"provider": response.provider},
+                )
+            except Exception:
+                pass
         
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
