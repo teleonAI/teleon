@@ -108,6 +108,10 @@ class LLMGateway:
         if not HELIX_TOKEN_BUDGET_AVAILABLE:
             return
 
+        self._token_budget_hourly = self._parse_int_env("TELEON_TOKEN_BUDGET_HOURLY")
+        self._token_budget_daily = self._parse_int_env("TELEON_TOKEN_BUDGET_DAILY")
+        self._token_budget_monthly = self._parse_int_env("TELEON_TOKEN_BUDGET_MONTHLY")
+
         budget_map: Dict[TokenPeriod, Optional[int]] = {
             TokenPeriod.HOURLY: self._token_budget_hourly,
             TokenPeriod.DAILY: self._token_budget_daily,
