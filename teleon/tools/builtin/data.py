@@ -109,6 +109,12 @@ class CSVParserTool(BaseTool):
             
             elif operation == "create":
                 data = kwargs.get("data", [])
+                # Accept JSON strings (common when called via LLM function calling)
+                if isinstance(data, str):
+                    try:
+                        data = json.loads(data)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 if not data:
                     raise ValueError("No data provided")
                 
@@ -162,7 +168,14 @@ class DataTransformTool(BaseTool):
         """Execute data transformation."""
         data = kwargs.get("data")
         operation = kwargs.get("operation")  # filter, map, reduce, sort
-        
+
+        # Accept JSON strings for the data parameter (common when called via LLM function calling)
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         try:
             if operation == "filter":
                 # Simple key-value filtering
@@ -252,12 +265,19 @@ class DataTransformTool(BaseTool):
 
 class DataValidatorTool(BaseTool):
     """Validate data against schemas."""
-    
+
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Execute data validation."""
         data = kwargs.get("data")
         validation_type = kwargs.get("type", "type_check")
-        
+
+        # Accept JSON strings for the data parameter (common when called via LLM function calling)
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         try:
             if validation_type == "type_check":
                 expected_type = kwargs.get("expected_type")
@@ -339,13 +359,20 @@ class DataValidatorTool(BaseTool):
 
 class FormatConverterTool(BaseTool):
     """Convert between different data formats."""
-    
+
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Execute format conversion."""
         data = kwargs.get("data")
         from_format = kwargs.get("from_format")
         to_format = kwargs.get("to_format")
-        
+
+        # Accept JSON strings for the data parameter (common when called via LLM function calling)
+        if isinstance(data, str) and from_format != "csv":
+            try:
+                data = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         try:
             # Parse input format
             if from_format == "json":

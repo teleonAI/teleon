@@ -1,7 +1,20 @@
 """Analytics and statistics tools."""
 
+import json
 from typing import Any, List
 from teleon.tools.base import BaseTool, ToolResult, ToolSchema, ToolCategory
+
+
+def _parse_numeric_list(value: Any) -> Any:
+    """Parse a JSON string into a list if needed (common with LLM function calling)."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return value
 
 
 class CalculateStatsTool(BaseTool):
@@ -9,8 +22,8 @@ class CalculateStatsTool(BaseTool):
     
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Calculate statistics."""
-        data = kwargs.get("data", [])
-        
+        data = _parse_numeric_list(kwargs.get("data", []))
+
         try:
             if not data:
                 return ToolResult(
@@ -72,7 +85,7 @@ class CalculatePercentileTool(BaseTool):
     
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Calculate percentile."""
-        data = kwargs.get("data", [])
+        data = _parse_numeric_list(kwargs.get("data", []))
         percentile = kwargs.get("percentile", 50)
         
         try:
@@ -129,7 +142,7 @@ class TimeSeriesAggregationTool(BaseTool):
     
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Aggregate time series."""
-        data = kwargs.get("data", [])  # List of {timestamp, value}
+        data = _parse_numeric_list(kwargs.get("data", []))  # List of {timestamp, value}
         interval = kwargs.get("interval", "hour")  # hour, day, week
         aggregation = kwargs.get("aggregation", "sum")  # sum, avg, min, max
         
@@ -172,8 +185,8 @@ class CorrelationTool(BaseTool):
     
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Calculate correlation."""
-        data_x = kwargs.get("data_x", [])
-        data_y = kwargs.get("data_y", [])
+        data_x = _parse_numeric_list(kwargs.get("data_x", []))
+        data_y = _parse_numeric_list(kwargs.get("data_y", []))
         
         try:
             if len(data_x) != len(data_y):

@@ -2,10 +2,30 @@
 
 import re
 import os
-from typing import Any
+from typing import Any, Union
 from urllib.parse import urlparse
 
 from teleon.tools.base import BaseTool, ToolResult, ToolSchema, ToolCategory
+
+
+def _resolve_ssl_verify(verify: Any) -> Union[bool, str]:
+    """Resolve SSL verification setting with certifi fallback for Windows."""
+    if verify is not True:
+        return verify
+    # Check explicit env-var overrides first
+    from_env = (
+        os.getenv("TELEON_CA_BUNDLE")
+        or os.getenv("SSL_CERT_FILE")
+        or os.getenv("REQUESTS_CA_BUNDLE")
+    )
+    if from_env:
+        return from_env
+    # Fallback: use certifi's CA bundle (fixes Windows "unable to get local issuer certificate")
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        return True
 
 
 class HTTPRequestTool(BaseTool):
@@ -21,13 +41,7 @@ class HTTPRequestTool(BaseTool):
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
 
-        if verify is True:
-            verify = (
-                os.getenv("TELEON_CA_BUNDLE")
-                or os.getenv("SSL_CERT_FILE")
-                or os.getenv("REQUESTS_CA_BUNDLE")
-                or True
-            )
+        verify = _resolve_ssl_verify(verify)
         
         try:
             import httpx
@@ -101,13 +115,7 @@ class WebScraperTool(BaseTool):
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
 
-        if verify is True:
-            verify = (
-                os.getenv("TELEON_CA_BUNDLE")
-                or os.getenv("SSL_CERT_FILE")
-                or os.getenv("REQUESTS_CA_BUNDLE")
-                or True
-            )
+        verify = _resolve_ssl_verify(verify)
         
         try:
             import httpx
@@ -233,13 +241,7 @@ class APIClientTool(BaseTool):
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
 
-        if verify is True:
-            verify = (
-                os.getenv("TELEON_CA_BUNDLE")
-                or os.getenv("SSL_CERT_FILE")
-                or os.getenv("REQUESTS_CA_BUNDLE")
-                or True
-            )
+        verify = _resolve_ssl_verify(verify)
         
         try:
             import httpx
@@ -306,13 +308,7 @@ class WebhookTool(BaseTool):
         verify = kwargs.get("verify", True)
         follow_redirects = kwargs.get("follow_redirects", True)
 
-        if verify is True:
-            verify = (
-                os.getenv("TELEON_CA_BUNDLE")
-                or os.getenv("SSL_CERT_FILE")
-                or os.getenv("REQUESTS_CA_BUNDLE")
-                or True
-            )
+        verify = _resolve_ssl_verify(verify)
         
         try:
             import httpx
