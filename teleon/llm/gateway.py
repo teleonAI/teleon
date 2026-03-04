@@ -19,8 +19,10 @@ try:
     from teleon.helix.cost_tracker import TokenPeriod, get_token_tracker
 
     HELIX_TOKEN_BUDGET_AVAILABLE = True
-except Exception:
+    HELIX_TOKEN_BUDGET_IMPORT_ERROR: Optional[str] = None
+except Exception as e:
     HELIX_TOKEN_BUDGET_AVAILABLE = False
+    HELIX_TOKEN_BUDGET_IMPORT_ERROR = str(e)
 
 # Try to import agent reporter for metrics
 try:
