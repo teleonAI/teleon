@@ -7,10 +7,16 @@ import time
 import os
 
 from teleon.llm.types import (
-    LLMMessage, LLMResponse, LLMConfig, ProviderConfig, LLMRequest
+    LLMMessage, LLMResponse, LLMConfig, ProviderConfig, LLMRequest, ToolCallRequest
 )
 from teleon.llm.providers.base import LLMProvider
 from teleon.llm.cache import ResponseCache
+from teleon.tools.schema_converter import (
+    tools_to_openai_format,
+    tools_to_prompt_description,
+    build_tool_map,
+    parse_tool_calls_from_text,
+)
 
 from teleon.core.exceptions import QuotaExceededError
 
@@ -249,60 +255,190 @@ class LLMGateway:
         self,
         messages: List[LLMMessage],
         config: LLMConfig,
-        provider: Optional[str] = None
+        provider: Optional[str] = None,
+        tools: Optional[list] = None,
     ) -> LLMResponse:
         """
-        Generate a completion.
-        
+        Generate a completion, optionally with a tool-calling loop.
+
+        When ``tools`` is provided the gateway will:
+        1. Convert tools to the provider's native format (or inject prompt descriptions).
+        2. Loop: send messages → parse tool calls → execute tools → append results.
+        3. Return the final text response (or stop after max_tool_iterations).
+
         Args:
             messages: List of conversation messages
             config: Request configuration
             provider: Specific provider to use (optional)
-        
+            tools: List of BaseTool instances to make available (optional)
+
         Returns:
             LLM response
         """
         start_time = time.time()
-        
+
         # Check cache first
         if config.use_cache and self.cache:
             cache_key = self._generate_cache_key(messages, config)
             cached_response = await self.cache.get(cache_key)
-            
+
             if cached_response:
                 cached_response.cached = True
                 return cached_response
-        
+
         # Select provider
         selected_provider = self._select_provider(config.model, provider)
-        
+
         if not selected_provider:
             raise ValueError(f"No provider available for model: {config.model}")
 
         await self._enforce_token_budgets(messages, config.model)
-        
-        # Generate completion
+
+        # ----- No tools: existing behaviour, single call -----
+        if not tools:
+            return await self._single_complete(messages, config, selected_provider, start_time)
+
+        # ----- Tool-calling loop -----
+        return await self._complete_with_tools(
+            messages, config, selected_provider, tools, start_time
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _single_complete(
+        self,
+        messages: List[LLMMessage],
+        config: LLMConfig,
+        selected_provider: LLMProvider,
+        start_time: float,
+    ) -> LLMResponse:
+        """Execute a single LLM call (no tool loop) with metrics/caching."""
         error_type = None
         try:
             response = await selected_provider.complete(messages, config)
-            success = True
         except Exception as e:
             self.error_count += 1
             error_type = type(e).__name__
-            
-            # Report failed request
             latency_ms = (time.time() - start_time) * 1000
             await self._report_request_metrics(
-                model=config.model,
-                input_tokens=0,
-                output_tokens=0,
-                latency_ms=latency_ms,
-                success=False,
-                cost=0.0,
-                error_type=error_type
+                model=config.model, input_tokens=0, output_tokens=0,
+                latency_ms=latency_ms, success=False, cost=0.0, error_type=error_type,
             )
             raise
 
+        return await self._finalize_response(response, config, start_time)
+
+    async def _complete_with_tools(
+        self,
+        messages: List[LLMMessage],
+        config: LLMConfig,
+        selected_provider: LLMProvider,
+        tools: list,
+        start_time: float,
+    ) -> LLMResponse:
+        """Run the tool-calling loop (native or prompt fallback)."""
+        from teleon.tools.base import BaseTool  # local to avoid circular imports
+
+        tool_map = build_tool_map(tools)
+        working_messages = list(messages)
+        uses_native = selected_provider.supports_tool_calling()
+
+        if uses_native:
+            # Attach tool schemas to config so the provider sends them natively
+            config = config.model_copy(update={
+                "tools": tools_to_openai_format(tools),
+            })
+        else:
+            # Inject tool descriptions into the system prompt
+            tool_desc = tools_to_prompt_description(tools)
+            working_messages = _inject_tool_prompt(working_messages, tool_desc)
+
+        max_iterations = config.max_tool_iterations or 10
+        response: Optional[LLMResponse] = None
+
+        for _iteration in range(max_iterations):
+            try:
+                response = await selected_provider.complete(working_messages, config)
+            except Exception as e:
+                self.error_count += 1
+                latency_ms = (time.time() - start_time) * 1000
+                await self._report_request_metrics(
+                    model=config.model, input_tokens=0, output_tokens=0,
+                    latency_ms=latency_ms, success=False, cost=0.0,
+                    error_type=type(e).__name__,
+                )
+                raise
+
+            # Extract tool calls (native or parsed from text)
+            tool_calls = response.tool_calls
+            if not tool_calls and not uses_native:
+                tool_calls = parse_tool_calls_from_text(response.content)
+
+            if not tool_calls:
+                # Final text response — done
+                break
+
+            # Append assistant message with tool calls for conversational context
+            if uses_native:
+                # For OpenAI/Azure: store the raw tool_calls on the assistant message
+                raw_tc = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+                working_messages.append(
+                    LLMMessage(
+                        role="assistant",
+                        content=response.content or "",
+                        tool_calls=raw_tc,
+                    )
+                )
+            else:
+                working_messages.append(
+                    LLMMessage(role="assistant", content=response.content or "")
+                )
+
+            # Execute each tool call and append results
+            for tc in tool_calls:
+                tool = tool_map.get(tc.name)
+                if tool is None:
+                    result_content = json.dumps({"error": f"Unknown tool: {tc.name}"})
+                else:
+                    result = await tool.safe_execute(**tc.arguments)
+                    result_content = json.dumps(
+                        {"success": result.success, "data": result.data, "error": result.error}
+                    )
+
+                if uses_native:
+                    working_messages.append(
+                        LLMMessage(role="tool", content=result_content, tool_call_id=tc.id)
+                    )
+                else:
+                    working_messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=f"Tool result for {tc.name}:\n{result_content}",
+                        )
+                    )
+
+        # Finalize the last response with metrics
+        if response is None:
+            raise RuntimeError("Tool-calling loop produced no response")
+
+        return await self._finalize_response(response, config, start_time)
+
+    async def _finalize_response(
+        self, response: LLMResponse, config: LLMConfig, start_time: float
+    ) -> LLMResponse:
+        """Apply metrics, cost, caching to a raw provider response."""
         if HELIX_TOKEN_BUDGET_AVAILABLE:
             try:
                 token_tracker = get_token_tracker()
@@ -316,26 +452,26 @@ class LLMGateway:
                 )
             except Exception:
                 pass
-        
+
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
-        
+
         # Extract token counts
         input_tokens = response.usage.prompt_tokens if response.usage else 0
         output_tokens = response.usage.completion_tokens if response.usage else 0
-        
+
         # Calculate cost if not provided
         cost = response.cost if response.cost else self._calculate_cost(
             config.model, input_tokens, output_tokens
         )
-        
+
         # Update statistics
         self.total_cost += cost
         self.total_tokens += response.usage.total_tokens if response.usage else 0
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
         self.request_count += 1
-        
+
         # Report metrics to Teleon Platform
         await self._report_request_metrics(
             model=config.model,
@@ -343,14 +479,16 @@ class LLMGateway:
             output_tokens=output_tokens,
             latency_ms=latency_ms,
             success=True,
-            cost=cost
+            cost=cost,
         )
-        
+
         # Cache the response
         if config.use_cache and self.cache and config.cache_ttl:
-            cache_key = self._generate_cache_key(messages, config)
+            cache_key = self._generate_cache_key(
+                [LLMMessage(role="system", content="cached")], config
+            )
             await self.cache.set(cache_key, response, ttl=config.cache_ttl)
-        
+
         return response
     
     async def stream_complete(
@@ -474,6 +612,23 @@ class LLMGateway:
         self.total_output_tokens = 0
         self.request_count = 0
         self.error_count = 0
+
+
+def _inject_tool_prompt(
+    messages: List[LLMMessage], tool_description: str
+) -> List[LLMMessage]:
+    """Prepend or augment the system message with tool descriptions.
+
+    Used for the prompt-based fallback when a provider doesn't support
+    native tool calling.
+    """
+    result = list(messages)
+    if result and result[0].role == "system":
+        augmented = result[0].content + "\n\n" + tool_description
+        result[0] = LLMMessage(role="system", content=augmented)
+    else:
+        result.insert(0, LLMMessage(role="system", content=tool_description))
+    return result
 
 
 # Global gateway instance (singleton)

@@ -2,10 +2,11 @@
 
 from typing import List, AsyncIterator, Dict, Any
 import asyncio
+import json
 import time
 
 from teleon.llm.providers.base import LLMProvider
-from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ProviderConfig
+from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ProviderConfig, ToolCallRequest
 
 
 class OpenAIProvider(LLMProvider):
@@ -44,6 +45,9 @@ class OpenAIProvider(LLMProvider):
         """Initialize OpenAI provider."""
         super().__init__(config)
         self._client = None
+
+    def supports_tool_calling(self) -> bool:
+        return True
     
     def _get_client(self):
         """Get or create OpenAI client (lazy initialization)."""
@@ -72,18 +76,24 @@ class OpenAIProvider(LLMProvider):
         start_time = time.time()
         
         # Convert messages to OpenAI format
-        openai_messages = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages
-        ]
-        
+        openai_messages = []
+        for msg in messages:
+            m: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+            if msg.tool_call_id:
+                m["tool_call_id"] = msg.tool_call_id
+            if msg.tool_calls:
+                m["tool_calls"] = msg.tool_calls
+            if msg.name:
+                m["name"] = msg.name
+            openai_messages.append(m)
+
         # Prepare request parameters
-        params = {
+        params: Dict[str, Any] = {
             "model": config.model,
             "messages": openai_messages,
             "temperature": config.temperature,
         }
-        
+
         if config.max_tokens:
             params["max_tokens"] = config.max_tokens
         if config.top_p is not None:
@@ -94,36 +104,57 @@ class OpenAIProvider(LLMProvider):
             params["presence_penalty"] = config.presence_penalty
         if config.stop:
             params["stop"] = config.stop
-        if config.functions:
+        if config.tools:
+            params["tools"] = config.tools
+        if config.tool_choice:
+            params["tool_choice"] = config.tool_choice
+        elif config.functions:
             params["functions"] = config.functions
         if config.function_call:
             params["function_call"] = config.function_call
-        
+
         # Make the API call
         try:
             response = await client.chat.completions.create(**params)
-            
+
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
-            
+
             # Extract response data
             choice = response.choices[0]
             content = choice.message.content or ""
-            
+
+            # Parse native tool_calls
+            tool_calls = None
+            if choice.message.tool_calls:
+                tool_calls = []
+                for tc in choice.message.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id=tc.id,
+                            name=tc.function.name,
+                            arguments=args,
+                        )
+                    )
+
             # Extract usage
             usage = LLMUsage(
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
                 total_tokens=response.usage.total_tokens
             )
-            
+
             # Calculate cost
             cost = self.calculate_cost(
                 usage.prompt_tokens,
                 usage.completion_tokens,
                 config.model
             )
-            
+
             return LLMResponse(
                 content=content,
                 model=config.model,
@@ -132,9 +163,10 @@ class OpenAIProvider(LLMProvider):
                 finish_reason=choice.finish_reason,
                 latency_ms=latency_ms,
                 cost=cost,
+                tool_calls=tool_calls,
                 raw_response=response.model_dump() if hasattr(response, 'model_dump') else None
             )
-            
+
         except Exception as e:
             raise RuntimeError(f"OpenAI API error: {str(e)}") from e
     

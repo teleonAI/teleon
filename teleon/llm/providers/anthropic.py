@@ -4,7 +4,7 @@ from typing import List, AsyncIterator, Dict, Any
 import time
 
 from teleon.llm.providers.base import LLMProvider
-from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ProviderConfig
+from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ProviderConfig, ToolCallRequest
 
 
 class AnthropicProvider(LLMProvider):
@@ -50,6 +50,9 @@ class AnthropicProvider(LLMProvider):
         """Initialize Anthropic provider."""
         super().__init__(config)
         self._client = None
+
+    def supports_tool_calling(self) -> bool:
+        return True
     
     def _get_client(self):
         """Get or create Anthropic client (lazy initialization)."""
@@ -73,24 +76,53 @@ class AnthropicProvider(LLMProvider):
     def _convert_messages(self, messages: List[LLMMessage]) -> tuple:
         """
         Convert Teleon messages to Anthropic format.
-        
+
         Anthropic requires system messages to be separate from the messages list.
-        
+        Tool result messages use role="user" with tool_result content blocks.
+
         Returns:
             Tuple of (system_message, anthropic_messages)
         """
         system_message = None
         anthropic_messages = []
-        
+
         for msg in messages:
             if msg.role == "system":
                 system_message = msg.content
+            elif msg.role == "tool":
+                # Anthropic expects tool results as user messages with tool_result blocks
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg.tool_call_id or "",
+                            "content": msg.content,
+                        }
+                    ],
+                })
+            elif msg.role == "assistant" and msg.tool_calls:
+                # Assistant message with tool_use blocks
+                content_blocks = []
+                if msg.content:
+                    content_blocks.append({"type": "text", "text": msg.content})
+                for tc in msg.tool_calls:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": tc.get("function", {}).get("name", ""),
+                        "input": tc.get("_parsed_arguments", {}),
+                    })
+                anthropic_messages.append({
+                    "role": "assistant",
+                    "content": content_blocks,
+                })
             else:
                 anthropic_messages.append({
                     "role": msg.role,
-                    "content": msg.content
+                    "content": msg.content,
                 })
-        
+
         return system_message, anthropic_messages
     
     async def complete(
@@ -109,46 +141,80 @@ class AnthropicProvider(LLMProvider):
         system_message, anthropic_messages = self._convert_messages(messages)
         
         # Prepare request parameters
-        params = {
+        params: Dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
             "max_tokens": config.max_tokens or 4096,  # Required by Anthropic
             "temperature": config.temperature,
         }
-        
+
         if system_message:
             params["system"] = system_message
-        
+
         if config.top_p is not None:
             params["top_p"] = config.top_p
-        
+
         if config.stop:
             params["stop_sequences"] = config.stop
-        
+
+        # Add tools if provided
+        if config.tools:
+            # Convert from OpenAI format to Anthropic format inline
+            anthropic_tools = []
+            for t in config.tools:
+                func = t.get("function", t)
+                anthropic_tools.append({
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+                })
+            params["tools"] = anthropic_tools
+            if config.tool_choice:
+                if config.tool_choice == "auto":
+                    params["tool_choice"] = {"type": "auto"}
+                elif config.tool_choice == "none":
+                    params["tool_choice"] = {"type": "none"}
+                else:
+                    params["tool_choice"] = {"type": "tool", "name": config.tool_choice}
+
         # Make the API call
         try:
             response = await client.messages.create(**params)
-            
+
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
-            
-            # Extract content
-            content = response.content[0].text if response.content else ""
-            
+
+            # Extract content and tool_use blocks
+            content = ""
+            tool_calls = None
+            for block in response.content:
+                if hasattr(block, "text"):
+                    content += block.text
+                elif hasattr(block, "type") and block.type == "tool_use":
+                    if tool_calls is None:
+                        tool_calls = []
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id=block.id,
+                            name=block.name,
+                            arguments=block.input if isinstance(block.input, dict) else {},
+                        )
+                    )
+
             # Extract usage
             usage = LLMUsage(
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens
             )
-            
+
             # Calculate cost
             cost = self.calculate_cost(
                 usage.prompt_tokens,
                 usage.completion_tokens,
                 model
             )
-            
+
             return LLMResponse(
                 content=content,
                 model=model,
@@ -157,9 +223,10 @@ class AnthropicProvider(LLMProvider):
                 finish_reason=response.stop_reason,
                 latency_ms=latency_ms,
                 cost=cost,
+                tool_calls=tool_calls,
                 raw_response=response.model_dump() if hasattr(response, 'model_dump') else None
             )
-            
+
         except Exception as e:
             raise RuntimeError(f"Anthropic API error: {str(e)}") from e
     

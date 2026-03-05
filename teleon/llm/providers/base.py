@@ -74,6 +74,14 @@ class LLMProvider(ABC):
         """
         pass
     
+    def supports_tool_calling(self) -> bool:
+        """Whether this provider supports native tool/function calling.
+
+        Subclasses should override and return True if they handle
+        tools/tool_choice natively in their API.
+        """
+        return False
+
     def calculate_cost(
         self,
         input_tokens: int,

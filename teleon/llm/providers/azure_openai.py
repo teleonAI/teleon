@@ -1,12 +1,13 @@
 """Azure OpenAI Provider - Production-grade Azure OpenAI integration."""
 
+import json as _json
 import os
-from typing import List, Optional, AsyncIterator
+from typing import Any, Dict, List, Optional, AsyncIterator
 import httpx
 from datetime import datetime
 
 from teleon.llm.providers.base import LLMProvider
-from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage
+from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ToolCallRequest
 from teleon.core.exceptions import LLMError
 
 
@@ -71,6 +72,9 @@ class AzureOpenAIProvider(LLMProvider):
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0)
         )
+
+    def supports_tool_calling(self) -> bool:
+        return True
     
     async def _get_auth_headers(self) -> dict:
         """Get authentication headers (API key or managed identity)."""
@@ -128,35 +132,62 @@ class AzureOpenAIProvider(LLMProvider):
         headers = await self._get_auth_headers()
         headers["Content-Type"] = "application/json"
         
+        # Convert messages to Azure OpenAI format (handles tool messages)
+        azure_messages = []
+        for msg in messages:
+            m: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+            if msg.tool_call_id:
+                m["tool_call_id"] = msg.tool_call_id
+            if msg.tool_calls:
+                m["tool_calls"] = msg.tool_calls
+            if msg.name:
+                m["name"] = msg.name
+            azure_messages.append(m)
+
         # Prepare request payload
-        payload = {
-            "messages": [
-                {"role": msg.role, "content": msg.content}
-                for msg in messages
-            ],
+        payload: Dict[str, Any] = {
+            "messages": azure_messages,
             "temperature": config.temperature,
             "max_tokens": config.max_tokens,
             "top_p": config.top_p,
             "frequency_penalty": config.frequency_penalty,
             "presence_penalty": config.presence_penalty,
-            "stream": False
+            "stream": False,
         }
-        
+
         # Add tools/functions if provided
-        if hasattr(config, 'tools') and config.tools:
+        if config.tools:
             payload["tools"] = config.tools
-            if hasattr(config, 'tool_choice') and config.tool_choice:
+            if config.tool_choice:
                 payload["tool_choice"] = config.tool_choice
-        
+
         try:
             response = await self.client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
+
             # Parse response
             choice = data["choices"][0]
             message = choice["message"]
-            
+
+            # Parse native tool_calls
+            tool_calls = None
+            if message.get("tool_calls"):
+                tool_calls = []
+                for tc in message["tool_calls"]:
+                    func = tc.get("function", {})
+                    try:
+                        args = _json.loads(func.get("arguments", "{}"))
+                    except (_json.JSONDecodeError, TypeError):
+                        args = {}
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id=tc.get("id", ""),
+                            name=func.get("name", ""),
+                            arguments=args,
+                        )
+                    )
+
             # Extract usage
             usage_data = data.get("usage", {})
             usage = LLMUsage(
@@ -164,21 +195,22 @@ class AzureOpenAIProvider(LLMProvider):
                 completion_tokens=usage_data.get("completion_tokens", 0),
                 total_tokens=usage_data.get("total_tokens", 0)
             )
-            
+
             # Calculate cost (Azure OpenAI pricing)
             cost = self._calculate_cost(config.model, usage)
-            
+
             return LLMResponse(
-                content=message.get("content", ""),
+                content=message.get("content") or "",
                 model=config.model,
                 provider="azure_openai",
                 usage=usage,
                 finish_reason=choice.get("finish_reason"),
                 latency_ms=response.elapsed.total_seconds() * 1000,
                 cost=cost,
-                cached=False
+                tool_calls=tool_calls,
+                cached=False,
             )
-            
+
         except httpx.HTTPStatusError as e:
             raise LLMError(
                 f"Azure OpenAI API error: {e.response.status_code} - {e.response.text}",

@@ -5,15 +5,25 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 
+class ToolCallRequest(BaseModel):
+    """Normalized tool call from any provider."""
+
+    id: str = Field(..., description="Unique call ID")
+    name: str = Field(..., description="Tool name")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="Parsed arguments")
+
+
 class LLMMessage(BaseModel):
     """Represents a message in an LLM conversation."""
-    
-    role: Literal["system", "user", "assistant", "function"] = Field(
+
+    role: Literal["system", "user", "assistant", "function", "tool"] = Field(
         ..., description="Role of the message sender"
     )
     content: str = Field(..., description="Content of the message")
     name: Optional[str] = Field(None, description="Name of the function (for function messages)")
     function_call: Optional[Dict[str, Any]] = Field(None, description="Function call data")
+    tool_call_id: Optional[str] = Field(None, description="Tool call ID (for tool result messages)")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Tool calls from assistant")
 
 
 class LLMUsage(BaseModel):
@@ -26,12 +36,13 @@ class LLMUsage(BaseModel):
 
 class LLMResponse(BaseModel):
     """Response from an LLM call."""
-    
+
     content: str = Field(..., description="Generated content from the LLM")
     model: str = Field(..., description="Model that generated the response")
     provider: str = Field(..., description="Provider that served the request")
     usage: LLMUsage = Field(default_factory=LLMUsage, description="Token usage information")
     finish_reason: Optional[str] = Field(None, description="Reason the generation finished")
+    tool_calls: Optional[List[ToolCallRequest]] = Field(None, description="Normalized tool calls")
     
     # Metadata
     latency_ms: Optional[float] = Field(None, description="Response latency in milliseconds")
@@ -54,9 +65,14 @@ class LLMConfig(BaseModel):
     presence_penalty: Optional[float] = Field(None, ge=-2.0, le=2.0, description="Presence penalty")
     stop: Optional[List[str]] = Field(None, description="Stop sequences")
     
-    # Function calling
+    # Function calling (legacy)
     functions: Optional[List[Dict[str, Any]]] = Field(None, description="Available functions")
     function_call: Optional[str] = Field(None, description="Function call behavior")
+
+    # Tool calling
+    tools: Optional[List[Dict[str, Any]]] = Field(None, description="Tool schemas (OpenAI format)")
+    tool_choice: Optional[str] = Field(None, description="Tool choice: 'auto', 'none', or tool name")
+    max_tool_iterations: int = Field(10, gt=0, description="Max tool-calling loop iterations")
     
     # Streaming
     stream: bool = Field(False, description="Whether to stream the response")

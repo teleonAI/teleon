@@ -179,6 +179,7 @@ class TeleonClient:
         helix: Optional[Dict[str, Any]] = None,
         cortex: Optional[Union[bool, Dict[str, Any]]] = None,
         sentinel: Optional[Dict[str, Any]] = None,
+        tools: Optional[List[Any]] = None,
         **kwargs
     ):
         """
@@ -196,6 +197,7 @@ class TeleonClient:
                 - False/None: Disabled
                 - Dict: Custom configuration
             sentinel: Sentinel safety and compliance configuration
+            tools: List of BaseTool instances to make available for tool calling
             **kwargs: Additional configuration
 
         Returns:
@@ -210,16 +212,12 @@ class TeleonClient:
                 await cortex.store(content=f"Query: {query}", customer_id=customer_id)
                 return response
 
-            # With configuration
+            # With tools
             @client.agent(
-                name="support",
-                cortex={
-                    "auto": True,
-                    "scope": ["customer_id"],
-                    "fields": ["query", "type"],
-                }
+                name="helper",
+                tools=[GenerateUUIDTool(), HashStringTool()],
             )
-            async def support_agent(query: str, customer_id: str, cortex: Memory):
+            async def helper_agent(query: str):
                 ...
             ```
         """
@@ -314,12 +312,13 @@ class TeleonClient:
 
             # Create AgentConfig
             from teleon.config.agent_config import AgentConfig
+            agent_tools = tools or kwargs.get('tools', [])
             agent_config = AgentConfig(
                 name=name,
                 memory=cortex_enabled,
                 scale=scale_config or {'min': 1, 'max': 10},
                 llm={'model': model, 'temperature': temperature, 'max_tokens': max_tokens},
-                tools=kwargs.get('tools', []),
+                tools=agent_tools,
                 collaborate=False,
                 timeout=kwargs.get('timeout'),
                 signature=sig,
@@ -650,6 +649,7 @@ class TeleonClient:
                 "helix": helix,
                 "cortex": cortex_config,
                 "sentinel": sentinel,
+                "tools": agent_tools,
                 "config": kwargs
             }
 
