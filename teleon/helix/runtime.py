@@ -22,6 +22,7 @@ from teleon.core import (
     StructuredLogger,
     LogLevel,
 )
+from teleon.core.exceptions import ErrorCode
 from teleon.helix.process import ProcessManager, ProcessInfo, ProcessStatus
 from teleon.helix.health import HealthChecker, HealthCheck
 from teleon.helix.scaling import Scaler, ScalingPolicy
@@ -242,7 +243,7 @@ class AgentRuntime:
             List of process IDs
         """
         if agent_id not in self.agents:
-            raise AgentError(f"Agent {agent_id} not registered", error_code="AGENT_NOT_FOUND")
+            raise AgentError(f"Agent {agent_id} not registered", ErrorCode.AGENT_NOT_FOUND)
         
         agent_info = self.agents[agent_id]
         resources = agent_info["resources"]
@@ -353,7 +354,7 @@ class AgentRuntime:
             instances: Desired number of instances
         """
         if agent_id not in self.agents:
-            raise AgentError(f"Agent {agent_id} not registered", error_code="AGENT_NOT_FOUND")
+            raise AgentError(f"Agent {agent_id} not registered", ErrorCode.AGENT_NOT_FOUND)
         
         agent_info = self.agents[agent_id]
         resources = agent_info["resources"]

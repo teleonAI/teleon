@@ -8,7 +8,7 @@ from datetime import datetime
 
 from teleon.llm.providers.base import LLMProvider
 from teleon.llm.types import LLMMessage, LLMResponse, LLMConfig, LLMUsage, ToolCallRequest
-from teleon.core.exceptions import LLMError
+from teleon.core.exceptions import LLMError, ErrorCode
 
 
 class AzureOpenAIProvider(LLMProvider):
@@ -214,10 +214,10 @@ class AzureOpenAIProvider(LLMProvider):
         except httpx.HTTPStatusError as e:
             raise LLMError(
                 f"Azure OpenAI API error: {e.response.status_code} - {e.response.text}",
-                code="AZURE_API_ERROR"
+                ErrorCode.LLM_PROVIDER_ERROR,
             )
         except Exception as e:
-            raise LLMError(f"Azure OpenAI request failed: {str(e)}", code="REQUEST_FAILED")
+            raise LLMError(f"Azure OpenAI request failed: {str(e)}", ErrorCode.LLM_PROVIDER_ERROR)
     
     async def stream_complete(
         self,
@@ -273,7 +273,7 @@ class AzureOpenAIProvider(LLMProvider):
                             continue
                             
         except Exception as e:
-            raise LLMError(f"Azure OpenAI streaming failed: {str(e)}", code="STREAM_FAILED")
+            raise LLMError(f"Azure OpenAI streaming failed: {str(e)}", ErrorCode.LLM_PROVIDER_ERROR)
     
     def _calculate_cost(self, model: str, usage: LLMUsage) -> float:
         """

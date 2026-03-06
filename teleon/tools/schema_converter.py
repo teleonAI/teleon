@@ -13,6 +13,46 @@ from teleon.llm.types import ToolCallRequest
 from teleon.tools.base import BaseTool
 
 
+def _sanitize_schema(obj: Any) -> Any:
+    """Recursively fix non-standard JSON Schema types for OpenAI/Azure compliance.
+
+    Fixes:
+    - ``"type": "any"`` -> ``"type": "string"`` (not valid JSON Schema)
+    - ``"type": "array"`` without ``"items"`` -> adds ``"items": {}``
+    - Nested ``properties`` / ``items`` are recursed into
+    - Empty ``"required": []`` is removed (Azure rejects it)
+    """
+    if not isinstance(obj, dict):
+        return obj
+
+    result = dict(obj)
+
+    # Fix "type": "any" — not a valid JSON Schema type
+    if result.get("type") == "any":
+        result["type"] = "string"
+        desc = result.get("description", "")
+        if "accepts any" not in desc:
+            result["description"] = (desc + " (accepts any JSON value)").strip()
+
+    # Fix "type": "array" missing "items" — Azure requires it
+    if result.get("type") == "array" and "items" not in result:
+        result["items"] = {"type": "string"}
+
+    # Remove empty required arrays — Azure rejects them
+    if "required" in result and isinstance(result["required"], list) and not result["required"]:
+        del result["required"]
+
+    # Recurse into nested schemas
+    if "properties" in result and isinstance(result["properties"], dict):
+        result["properties"] = {
+            k: _sanitize_schema(v) for k, v in result["properties"].items()
+        }
+    if "items" in result and isinstance(result["items"], dict):
+        result["items"] = _sanitize_schema(result["items"])
+
+    return result
+
+
 def tools_to_openai_format(tools: list) -> List[Dict[str, Any]]:
     """Convert BaseTool instances to OpenAI tools format.
 
@@ -32,7 +72,7 @@ def tools_to_openai_format(tools: list) -> List[Dict[str, Any]]:
             "function": {
                 "name": schema.name,
                 "description": schema.description,
-                "parameters": schema.parameters,
+                "parameters": _sanitize_schema(schema.parameters),
             },
         })
     return openai_tools
@@ -55,7 +95,7 @@ def tools_to_anthropic_format(tools: list) -> List[Dict[str, Any]]:
         anthropic_tools.append({
             "name": schema.name,
             "description": schema.description,
-            "input_schema": schema.parameters,
+            "input_schema": _sanitize_schema(schema.parameters),
         })
     return anthropic_tools
 
