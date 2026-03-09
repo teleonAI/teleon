@@ -178,14 +178,39 @@ class DataTransformTool(BaseTool):
 
         try:
             if operation == "filter":
-                # Simple key-value filtering
                 filter_key = kwargs.get("key")
                 filter_value = kwargs.get("value")
-                
+                condition = kwargs.get("condition", "eq")
+
+                # Coerce filter_value to number for numeric comparisons
+                numeric_value = None
+                if condition in ("gt", "gte", "lt", "lte"):
+                    try:
+                        numeric_value = float(filter_value)
+                    except (TypeError, ValueError):
+                        pass
+
+                def _matches(item_val: Any) -> bool:
+                    if condition == "eq":
+                        return item_val == filter_value
+                    elif condition == "neq":
+                        return item_val != filter_value
+                    elif condition == "gt":
+                        return isinstance(item_val, (int, float)) and numeric_value is not None and item_val > numeric_value
+                    elif condition == "gte":
+                        return isinstance(item_val, (int, float)) and numeric_value is not None and item_val >= numeric_value
+                    elif condition == "lt":
+                        return isinstance(item_val, (int, float)) and numeric_value is not None and item_val < numeric_value
+                    elif condition == "lte":
+                        return isinstance(item_val, (int, float)) and numeric_value is not None and item_val <= numeric_value
+                    elif condition == "contains":
+                        return isinstance(item_val, str) and str(filter_value) in item_val
+                    return item_val == filter_value
+
                 if isinstance(data, list):
                     result = [
                         item for item in data
-                        if isinstance(item, dict) and item.get(filter_key) == filter_value
+                        if isinstance(item, dict) and _matches(item.get(filter_key))
                     ]
                 else:
                     result = data
@@ -250,11 +275,16 @@ class DataTransformTool(BaseTool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "data": {"type": "any"},
+                    "data": {"type": "any", "description": "Array of objects to transform"},
                     "operation": {"type": "string", "enum": ["filter", "sort", "group_by"]},
-                    "key": {"type": "string"},
-                    "value": {"type": "any"},
-                    "reverse": {"type": "boolean"}
+                    "key": {"type": "string", "description": "Object key to filter/sort/group by"},
+                    "value": {"type": "any", "description": "Value to compare against (for filter)"},
+                    "condition": {
+                        "type": "string",
+                        "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "contains"],
+                        "description": "Comparison operator for filter: eq (equals), neq (not equals), gt (greater than), gte (>=), lt (less than), lte (<=), contains (string contains). Defaults to eq.",
+                    },
+                    "reverse": {"type": "boolean", "description": "Reverse sort order (for sort)"}
                 },
                 "required": ["data", "operation"]
             },
