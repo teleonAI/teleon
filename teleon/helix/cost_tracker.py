@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from enum import Enum
 import asyncio
+import json
+import os
+from pathlib import Path
 from collections import defaultdict
 
 from teleon.core import (
@@ -69,16 +72,24 @@ class TokenBreakdown(BaseModel):
 class TokenTracker:
     """
     Real-time token tracking for LLM operations.
-    
+
     Tracks tokens at multiple granularities:
     - Per agent
     - Per model
     - Per operation type
     - Over time periods (hour, day, month)
+
+    Token events are persisted to a JSON file so usage data survives
+    server restarts. On startup, events are loaded from disk and all
+    in-memory counters are rebuilt. Events older than 31 days are pruned.
     """
-    
-    def __init__(self):
-        """Initialize token tracker."""
+
+    _PERSISTENCE_FILE_ENV = "TELEON_TOKEN_USAGE_FILE"
+    _DEFAULT_PERSISTENCE_FILE = ".teleon_token_usage.json"
+    _PRUNE_DAYS = 31
+
+    def __init__(self, persistence_path: Optional[str] = None):
+        """Initialize token tracker and load persisted events from disk."""
         # Token accumulation
         self.total_tokens = 0
         self.total_input_tokens = 0
@@ -86,25 +97,129 @@ class TokenTracker:
         self.tokens_by_agent: Dict[str, int] = defaultdict(int)
         self.tokens_by_model: Dict[str, int] = defaultdict(int)
         self.tokens_by_operation: Dict[str, int] = defaultdict(int)
-        
+
         # Separate input/output tracking
         self.input_tokens_by_agent: Dict[str, int] = defaultdict(int)
         self.output_tokens_by_agent: Dict[str, int] = defaultdict(int)
         self.input_tokens_by_model: Dict[str, int] = defaultdict(int)
         self.output_tokens_by_model: Dict[str, int] = defaultdict(int)
-        
+
         # Time-series data
         self.hourly_tokens: Dict[str, int] = {}  # timestamp -> tokens
         self.daily_tokens: Dict[str, int] = {}
         self.monthly_tokens: Dict[str, int] = {}
-        
+
         # Token events (for detailed analysis)
         self.token_events: List[Dict[str, Any]] = []
         self.max_events = 10000  # Keep last N events
-        
+
         self.lock = asyncio.Lock()
         self.logger = StructuredLogger("token_tracker", LogLevel.INFO)
+
+        # Persistence
+        self._persistence_path = Path(
+            persistence_path
+            or os.getenv(self._PERSISTENCE_FILE_ENV)
+            or self._DEFAULT_PERSISTENCE_FILE
+        )
+        self._load_from_disk()
     
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_from_disk(self) -> None:
+        """Load persisted token events from disk and rebuild in-memory state."""
+        if not self._persistence_path.exists():
+            return
+
+        try:
+            raw = self._persistence_path.read_text(encoding="utf-8")
+            events = json.loads(raw) if raw.strip() else []
+        except Exception as exc:
+            self.logger.warning(f"Could not load token usage file: {exc}")
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._PRUNE_DAYS)
+        loaded = 0
+
+        for entry in events:
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+            except (KeyError, ValueError):
+                continue
+            if ts < cutoff:
+                continue
+
+            total = entry.get("input_tokens", 0) + entry.get("output_tokens", 0)
+            agent_id = entry.get("agent_id", "unknown")
+            model = entry.get("model", "unknown")
+            operation = entry.get("operation", "completion")
+            inp = entry.get("input_tokens", 0)
+            out = entry.get("output_tokens", 0)
+
+            self.total_tokens += total
+            self.total_input_tokens += inp
+            self.total_output_tokens += out
+            self.tokens_by_agent[agent_id] += total
+            self.tokens_by_model[model] += total
+            self.tokens_by_operation[operation] += total
+            self.input_tokens_by_agent[agent_id] += inp
+            self.output_tokens_by_agent[agent_id] += out
+            self.input_tokens_by_model[model] += inp
+            self.output_tokens_by_model[model] += out
+
+            hour_key = ts.strftime("%Y-%m-%d-%H")
+            day_key = ts.strftime("%Y-%m-%d")
+            month_key = ts.strftime("%Y-%m")
+            self.hourly_tokens[hour_key] = self.hourly_tokens.get(hour_key, 0) + total
+            self.daily_tokens[day_key] = self.daily_tokens.get(day_key, 0) + total
+            self.monthly_tokens[month_key] = self.monthly_tokens.get(month_key, 0) + total
+
+            self.token_events.append({
+                "timestamp": ts,
+                "agent_id": agent_id,
+                "model": model,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": total,
+                "operation": operation,
+                "metadata": entry.get("metadata", {}),
+            })
+            loaded += 1
+
+        if loaded:
+            self.logger.info(f"Loaded {loaded} token events from {self._persistence_path}")
+
+    def _save_to_disk(self) -> None:
+        """Persist current token events to disk (prunes old entries)."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self._PRUNE_DAYS)
+        serializable = []
+        for e in self.token_events:
+            ts = e["timestamp"]
+            if ts < cutoff:
+                continue
+            serializable.append({
+                "timestamp": ts.isoformat(),
+                "agent_id": e["agent_id"],
+                "model": e["model"],
+                "input_tokens": e["input_tokens"],
+                "output_tokens": e["output_tokens"],
+                "operation": e["operation"],
+                "metadata": e.get("metadata", {}),
+            })
+
+        try:
+            tmp_path = self._persistence_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(serializable), encoding="utf-8")
+            tmp_path.replace(self._persistence_path)
+        except Exception as exc:
+            self.logger.warning(f"Could not save token usage file: {exc}")
+
+    # ------------------------------------------------------------------
+    # Core tracking
+    # ------------------------------------------------------------------
+
     async def record_tokens(
         self,
         agent_id: str,
@@ -116,7 +231,7 @@ class TokenTracker:
     ) -> int:
         """
         Record tokens for an LLM operation.
-        
+
         Args:
             agent_id: Agent identifier
             model: Model name
@@ -124,12 +239,12 @@ class TokenTracker:
             output_tokens: Output token count
             operation: Operation type
             metadata: Additional metadata
-        
+
         Returns:
             Total tokens recorded
         """
         total_tokens = input_tokens + output_tokens
-        
+
         async with self.lock:
             # Accumulate tokens
             self.total_tokens += total_tokens
@@ -138,23 +253,23 @@ class TokenTracker:
             self.tokens_by_agent[agent_id] += total_tokens
             self.tokens_by_model[model] += total_tokens
             self.tokens_by_operation[operation] += total_tokens
-            
+
             # Track input/output separately
             self.input_tokens_by_agent[agent_id] += input_tokens
             self.output_tokens_by_agent[agent_id] += output_tokens
             self.input_tokens_by_model[model] += input_tokens
             self.output_tokens_by_model[model] += output_tokens
-            
+
             # Track by time periods
             now = datetime.now(timezone.utc)
             hour_key = now.strftime("%Y-%m-%d-%H")
             day_key = now.strftime("%Y-%m-%d")
             month_key = now.strftime("%Y-%m")
-            
+
             self.hourly_tokens[hour_key] = self.hourly_tokens.get(hour_key, 0) + total_tokens
             self.daily_tokens[day_key] = self.daily_tokens.get(day_key, 0) + total_tokens
             self.monthly_tokens[month_key] = self.monthly_tokens.get(month_key, 0) + total_tokens
-            
+
             # Record event
             event = {
                 "timestamp": now,
@@ -167,30 +282,33 @@ class TokenTracker:
                 "metadata": metadata or {}
             }
             self.token_events.append(event)
-            
+
             # Trim events if needed
             if len(self.token_events) > self.max_events:
                 self.token_events = self.token_events[-self.max_events:]
-            
+
+            # Persist to disk
+            self._save_to_disk()
+
             # Record to global metrics
             get_metrics().increment_counter(
                 'llm_tokens_total',
                 {'agent_id': agent_id, 'model': model},
                 total_tokens
             )
-            
+
             get_metrics().increment_counter(
                 'llm_input_tokens_total',
                 {'agent_id': agent_id, 'model': model},
                 input_tokens
             )
-            
+
             get_metrics().increment_counter(
                 'llm_output_tokens_total',
                 {'agent_id': agent_id, 'model': model},
                 output_tokens
             )
-        
+
         return total_tokens
     
     async def get_tokens(
@@ -297,9 +415,10 @@ class TokenTracker:
     
     async def get_statistics(self) -> Dict[str, Any]:
         """Get comprehensive token statistics."""
+        # Get breakdown first (acquires lock internally) to avoid deadlock
+        breakdown = await self.get_breakdown()
+
         async with self.lock:
-            breakdown = await self.get_breakdown()
-            
             return {
                 "total_tokens": self.total_tokens,
                 "total_input_tokens": self.total_input_tokens,
@@ -316,7 +435,7 @@ class TokenTracker:
             }
     
     async def reset(self):
-        """Reset all token tracking."""
+        """Reset all token tracking and clear persisted data."""
         async with self.lock:
             self.total_tokens = 0
             self.total_input_tokens = 0
@@ -332,7 +451,8 @@ class TokenTracker:
             self.daily_tokens.clear()
             self.monthly_tokens.clear()
             self.token_events.clear()
-        
+            self._save_to_disk()
+
         self.logger.info("Token tracking reset")
 
 
@@ -451,6 +571,9 @@ class TokenBudgetManager:
                     now = datetime.now(timezone.utc)
                     if p == TokenPeriod.DAILY:
                         start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    elif p == TokenPeriod.WEEKLY:
+                        start_time = now - timedelta(days=now.weekday())
+                        start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
                     else:  # MONTHLY
                         start_time = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                     
