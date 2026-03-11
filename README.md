@@ -1014,7 +1014,7 @@ Built with: **FastAPI** · **Pydantic** · **ChromaDB** · **PostgreSQL** · **R
 ## 📞 Support & Community
 
 - **Documentation**: [docs.teleon.ai](https://docs.teleon.ai)
-- **Discord**: [Join our community](https://discord.gg/)
+- **Discord**: [Join our community](https://discord.gg/zUbtH3XB)
 - **Twitter**: [@Teleon_AI](https://twitter.com/Teleon_AI)
 - **Email**: founders@teleon.ai
 - **GitHub Issues**: [Report bugs](https://github.com/teleonAI/teleon/issues)
