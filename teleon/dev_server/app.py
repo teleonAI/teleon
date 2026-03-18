@@ -1081,7 +1081,8 @@ text-decoration:none;transition:all .2s ease}}
                 detail=f"Agent parameter error: {str(e)}. Check that your input matches the agent's expected parameters: {agent_info.get('parameters', 'unknown')}"
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+            logger.error(f"Agent execution failed: {type(e).__name__}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Agent execution failed: {type(e).__name__}: {str(e)}")
 
     @app.get("/{agent_id}/info")
     async def get_agent_info(agent_id: str):
