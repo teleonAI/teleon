@@ -213,10 +213,12 @@ def discover_agents(
                         # Decorator-based agents don't have a TeleonClient/user_id, so we set a local placeholder.
                         agent_name = getattr(config, "name", None) or getattr(obj, "__name__", "agent")
 
-                        import uuid
+                        import hashlib
                         from datetime import datetime, timezone
 
-                        agent_id = f"agent_{uuid.uuid4().hex[:16]}"
+                        # Stable ID: hash of agent name + source file so it survives restarts/redeploys
+                        stable_str = f"local:{agent_name}:{py_file.name}"
+                        agent_id = f"agent_{hashlib.sha256(stable_str.encode()).hexdigest()[:16]}"
                         agent_info = {
                             "agent_id": agent_id,
                             "name": agent_name,

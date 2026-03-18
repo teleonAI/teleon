@@ -675,8 +675,9 @@ class TeleonClient:
         return decorator
 
     def _generate_agent_id(self, name: str) -> str:
-        """Generate a unique agent ID."""
-        unique_str = f"{self.user_id}:{name}:{datetime.now(timezone.utc).isoformat()}"
+        """Generate a stable agent ID from user_id and agent name.
+        Same user + same agent name = same ID across restarts and deploys."""
+        unique_str = f"{self.user_id}:{name}"
         hash_id = hashlib.sha256(unique_str.encode()).hexdigest()[:16]
         return f"agent_{hash_id}"
 
