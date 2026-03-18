@@ -82,6 +82,9 @@ class PostgresBackend(StorageBackend):
         self._password = password
         self._min_connections = min_connections
         self._max_connections = max_connections
+        # Normalize SQLAlchemy-style DSNs (postgresql+asyncpg://) to plain postgresql://
+        if connection_string and "+asyncpg" in connection_string:
+            connection_string = connection_string.replace("postgresql+asyncpg", "postgresql")
         self._connection_string = connection_string
 
         self._pool: Optional[_PoolT] = None

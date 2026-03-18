@@ -112,8 +112,8 @@ def create_dev_server(
     # In-memory API key storage (for dev only)
     api_keys = {}
     
-    # Dev mode check - these keys only work when TELEON_ENV is 'development' or not set
-    is_dev_mode = os.getenv("TELEON_ENV", "development").lower() in ["development", "dev", "local"]
+    # Dev mode check - must be explicitly opted in. Defaults to production for safety.
+    is_dev_mode = os.getenv("TELEON_ENV", "production").lower() in ["development", "dev", "local"]
 
     require_login = os.getenv("TELEON_DEV_SERVER_REQUIRE_LOGIN", "").strip().lower() in ["1", "true", "yes", "on"]
     require_login = require_login or (not is_dev_mode)
@@ -126,6 +126,7 @@ def create_dev_server(
 
     # Stable deployment ID set at deploy time (env var injected by the deployer).
     deployment_id = os.getenv("TELEON_DEPLOYMENT_ID", "")
+
 
     # Request history for debugging (max 500 entries)
     request_history = deque(maxlen=500)
@@ -322,6 +323,7 @@ def create_dev_server(
             enforce_login = require_login or deployed_host
 
             if not enforce_login:
+                request.state.platform_authenticated = False
                 return await call_next(request)
 
             path = request.url.path
@@ -348,7 +350,7 @@ def create_dev_server(
                         authenticated = True
 
             if not authenticated:
-                # Also check Authorization header (API clients)
+                # Check Authorization header (API clients)
                 bearer = extract_bearer_token(request.headers.get("authorization"))
                 if bearer:
                     valid = await validate_platform_api_key(bearer)
@@ -356,8 +358,10 @@ def create_dev_server(
                         authenticated = True
 
             if authenticated:
+                request.state.platform_authenticated = True
                 return await call_next(request)
 
+            request.state.platform_authenticated = False
             accept = request.headers.get("accept", "")
             wants_html = "text/html" in accept
             if wants_html and request.method == "GET":
@@ -367,22 +371,32 @@ def create_dev_server(
 
     app.add_middleware(PlatformAuthMiddleware)
 
-    def verify_api_key(api_key: str) -> bool:
+    def verify_api_key(api_key: str, request: Optional[Request] = None) -> bool:
         """
         Verify if API key is valid.
-        
-        Dev API keys (starting with 'teleon_dev_') only work when TELEON_ENV
-        is set to 'development', 'dev', or 'local'.
+
+        Accepts two independent key types:
+        - Dev keys ('teleon_dev_*'): checked against in-memory store, localhost only, low rate limit
+        - Platform keys ('tlk_live_*', 'tlk_test_*'): validated by PlatformAuthMiddleware, high rate limit
         """
-        # Check if key exists
+        # Platform keys are already validated by the middleware
+        if request and getattr(request.state, "platform_authenticated", False):
+            return True
+
+        # Dev keys: check in-memory store
         if api_key not in api_keys:
             return False
-        
-        # If it's a dev key, ensure we're in dev mode
+
+        # Dev keys only work in dev mode AND on localhost
         if api_key.startswith("teleon_dev_"):
             if not is_dev_mode:
                 return False
-        
+            if request:
+                forwarded_host = request.headers.get("x-forwarded-host", "")
+                host = forwarded_host or request.headers.get("host", "")
+                if not is_local_host(host):
+                    return False
+
         return True
 
     def generate_api_key() -> str:
@@ -954,6 +968,7 @@ text-decoration:none;transition:all .2s ease}}
     # METHOD 1: Shared endpoint (original)
     @app.post("/invoke")
     async def invoke_agent_shared(
+        raw_request: Request,
         request: AgentRequest,
         authorization: Optional[str] = Header(None)
     ):
@@ -961,13 +976,14 @@ text-decoration:none;transition:all .2s ease}}
         METHOD 1: Invoke any agent by name (shared endpoint).
 
         Requires API key in Authorization header.
+        Accepts both dev keys (teleon_dev_*) and platform keys (tlk_live_*, tlk_test_*).
         """
         # Verify API key
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing authorization header")
 
         api_key = authorization.replace("Bearer ", "")
-        if not verify_api_key(api_key):
+        if not verify_api_key(api_key, raw_request):
             raise HTTPException(status_code=403, detail="Invalid API key")
 
         # Find agent by name
@@ -992,6 +1008,7 @@ text-decoration:none;transition:all .2s ease}}
     @app.post("/{agent_id}/invoke")
     async def invoke_agent_individual(
         agent_id: str,
+        raw_request: Request,
         request: IndividualAgentRequest,
         authorization: Optional[str] = Header(None)
     ):
@@ -999,13 +1016,14 @@ text-decoration:none;transition:all .2s ease}}
         METHOD 2: Invoke a specific agent by its ID.
 
         Each agent has its own endpoint with its own docs.
+        Accepts both dev keys (teleon_dev_*) and platform keys (tlk_live_*, tlk_test_*).
         """
         # Verify API key
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing authorization header")
 
         api_key = authorization.replace("Bearer ", "")
-        if not verify_api_key(api_key):
+        if not verify_api_key(api_key, raw_request):
             raise HTTPException(status_code=403, detail="Invalid API key")
 
         # Get agent
@@ -1184,8 +1202,15 @@ text-decoration:none;transition:all .2s ease}}
         }
 
     @app.post("/api-keys")
-    async def create_api_key(request: APIKeyRequest):
-        """Create a new dev-only API key for testing."""
+    async def create_api_key(request: APIKeyRequest, raw_request: Request = None):
+        """Create a new dev-only API key for testing. Only available on localhost in dev mode."""
+        forwarded_host = raw_request.headers.get("x-forwarded-host", "") if raw_request else ""
+        host = forwarded_host or (raw_request.headers.get("host", "") if raw_request else "")
+        if not is_local_host(host):
+            raise HTTPException(
+                status_code=403,
+                detail="API key generation is only available on localhost."
+            )
         if not is_dev_mode:
             raise HTTPException(
                 status_code=403,
@@ -1207,8 +1232,15 @@ text-decoration:none;transition:all .2s ease}}
         )
 
     @app.get("/api-keys")
-    async def list_api_keys():
-        """List all API keys."""
+    async def list_api_keys(raw_request: Request = None):
+        """List all API keys. Only available on localhost."""
+        forwarded_host = raw_request.headers.get("x-forwarded-host", "") if raw_request else ""
+        host = forwarded_host or (raw_request.headers.get("host", "") if raw_request else "")
+        if not is_local_host(host):
+            raise HTTPException(
+                status_code=403,
+                detail="API key management is only available on localhost."
+            )
         dev_mode_warning = """
             <div style="background: #2e1a1a; border: 1px solid #ff6b6b; padding: 10px 15px; border-radius: 6px; margin: 20px 0; color: #ff6b6b;">
                 ⚠️ <strong>DEVELOPMENT MODE ONLY:</strong> API keys generated here will NOT work in production (when TELEON_ENV=production).
