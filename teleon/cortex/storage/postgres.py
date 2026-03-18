@@ -94,22 +94,33 @@ class PostgresBackend(StorageBackend):
     async def _get_pool(self) -> _PoolT:
         """Get or create connection pool."""
         if self._pool is None:
-            if self._connection_string:
-                self._pool = await asyncpg.create_pool(
-                    self._connection_string,
-                    min_size=self._min_connections,
-                    max_size=self._max_connections
+            try:
+                if self._connection_string:
+                    logger.info(
+                        f"Creating connection pool for "
+                        f"{self._connection_string.split('@')[-1] if '@' in self._connection_string else 'configured host'}"
+                    )
+                    self._pool = await asyncpg.create_pool(
+                        self._connection_string,
+                        min_size=self._min_connections,
+                        max_size=self._max_connections
+                    )
+                else:
+                    logger.info(f"Creating connection pool for {self._host}:{self._port}/{self._database}")
+                    self._pool = await asyncpg.create_pool(
+                        host=self._host,
+                        port=self._port,
+                        database=self._database,
+                        user=self._user,
+                        password=self._password,
+                        min_size=self._min_connections,
+                        max_size=self._max_connections
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to create PostgreSQL connection pool: {type(e).__name__}: {e}"
                 )
-            else:
-                self._pool = await asyncpg.create_pool(
-                    host=self._host,
-                    port=self._port,
-                    database=self._database,
-                    user=self._user,
-                    password=self._password,
-                    min_size=self._min_connections,
-                    max_size=self._max_connections
-                )
+                raise
 
             # Initialize schema
             await self._init_schema()
@@ -123,8 +134,16 @@ class PostgresBackend(StorageBackend):
             return
 
         async with pool.acquire() as conn:
-            # Enable pgvector extension
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            # Enable pgvector extension — required for Cortex vector search
+            try:
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            except Exception as e:
+                raise StorageError(
+                    f"pgvector extension is required for Cortex but could not be enabled. "
+                    f"Ensure pgvector is installed on your PostgreSQL instance and the "
+                    f"database role has permission to create extensions. "
+                    f"Original error: {type(e).__name__}: {e}"
+                ) from e
 
             # Create memories table
             await conn.execute(f"""
@@ -177,7 +196,7 @@ class PostgresBackend(StorageBackend):
                     WITH (lists = 100);
                 """)
 
-        logger.info("PostgreSQL schema initialized")
+        logger.info("PostgreSQL schema initialized with pgvector")
 
     def _build_filter_clause(
         self,
@@ -281,7 +300,7 @@ class PostgresBackend(StorageBackend):
             filter_clause, filter_params = self._build_filter_clause(filter, param_offset=3)
 
             if query_embedding:
-                # Semantic search with cosine similarity
+                # Semantic search with cosine similarity (pgvector)
                 base_query = f"""
                     SELECT id, content, fields, created_at, updated_at, expires_at,
                            1 - (embedding <=> $1::vector) as score

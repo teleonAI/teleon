@@ -298,7 +298,10 @@ class TeleonClient:
                             "and required dependencies. "
                             f"Original error: {e}"
                         )
-                    logging.getLogger("teleon.agent").error(f"Failed to initialize Cortex: {e}")
+                    logging.getLogger("teleon.agent").error(
+                        f"Failed to initialize Cortex: {type(e).__name__}: {e}",
+                        exc_info=True
+                    )
                     cortex_enabled = False
 
             # Map helix config to scale config
@@ -453,7 +456,10 @@ class TeleonClient:
                         logger.debug(f"Cortex initialized: {len(context.entries)} context entries")
 
                     except Exception as e:
-                        logger.error(f"Failed to initialize Cortex memory: {e}")
+                        logger.error(
+                            f"Failed to initialize Cortex memory: {type(e).__name__}: {e}",
+                            exc_info=True
+                        )
                         memory_instance = None
 
                 # Inject memory into kwargs if function expects it

@@ -2040,9 +2040,96 @@ text-decoration:none;transition:all .2s ease}}
                 logger.debug(f"Platform metrics report error (non-fatal): {e}")
                 # Continue running - don't stop on errors
     
+    # ==================== PERSISTENT AGENT ID RESOLUTION ====================
+
+    async def resolve_agent_ids_from_platform():
+        """
+        On startup, call the platform API to get stable agent IDs.
+
+        The platform stores the agent_id <-> (deployment, name) mapping.
+        This ensures agent IDs never change across deploys/restarts.
+        Falls back silently to locally-generated IDs if the platform is
+        unreachable (e.g. local dev mode).
+        """
+        if not HTTPX_AVAILABLE:
+            logger.debug("httpx not available - skipping agent ID resolution")
+            return
+
+        resolve_platform_url = os.getenv("TELEON_PLATFORM_URL")
+        resolve_deployment_id = os.getenv("TELEON_DEPLOYMENT_ID")
+        resolve_api_key = os.getenv("TELEON_API_KEY") or os.getenv("TELEON_PLATFORM_API_KEY")
+
+        if not all([resolve_platform_url, resolve_deployment_id, resolve_api_key]):
+            logger.debug(
+                "Agent ID resolution skipped - missing TELEON_PLATFORM_URL, "
+                "TELEON_DEPLOYMENT_ID, or TELEON_API_KEY"
+            )
+            return
+
+        # Build the list of agents to resolve
+        agents_to_resolve = []
+        for agent_id, info in discovered_agents.items():
+            agents_to_resolve.append({
+                "name": info.get("name", agent_id),
+                "description": info.get("description"),
+                "config": info.get("config"),
+                "has_sentinel": bool(info.get("sentinel")),
+                "has_cortex": bool(info.get("cortex")),
+            })
+
+        if not agents_to_resolve:
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{resolve_platform_url.rstrip('/')}/api/v1/agents/resolve-ids",
+                    json={
+                        "deployment_id": resolve_deployment_id,
+                        "agents": agents_to_resolve,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {resolve_api_key}",
+                        "Content-Type": "application/json",
+                    }
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    name_to_stable_id = data.get("agent_ids", {})
+
+                    # Remap discovered_agents: replace locally-generated IDs with platform-assigned ones
+                    agents_to_remap = []
+                    for old_id, info in list(discovered_agents.items()):
+                        agent_name = info.get("name")
+                        if agent_name in name_to_stable_id:
+                            stable_id = name_to_stable_id[agent_name]
+                            if stable_id != old_id:
+                                agents_to_remap.append((old_id, stable_id, info))
+
+                    for old_id, stable_id, info in agents_to_remap:
+                        # Remove old key, insert with stable key
+                        del discovered_agents[old_id]
+                        info["agent_id"] = stable_id
+                        discovered_agents[stable_id] = info
+
+                    logger.info(
+                        f"Resolved {len(name_to_stable_id)} stable agent IDs from platform "
+                        f"({len(agents_to_remap)} remapped)"
+                    )
+                else:
+                    logger.warning(
+                        f"Agent ID resolution failed: {response.status_code} - "
+                        f"{response.text[:200]}"
+                    )
+        except Exception as e:
+            logger.warning(f"Agent ID resolution error (non-fatal, using local IDs): {e}")
+
     # Start file watcher on startup
     @app.on_event("startup")
     async def startup_event():
+        # Resolve stable agent IDs from platform FIRST (before anything else uses them)
+        await resolve_agent_ids_from_platform()
         await start_file_watcher()
         # Start platform metrics reporter (non-blocking background task)
         asyncio.create_task(report_metrics_to_platform())
